@@ -8,9 +8,18 @@
 # 出错后停止运行，将进入到登录界面，防止失联
 set -eE
 
+# Every stage uses the same local bundle. Never fetch helper code after reboot.
+PO0_ASSET_DIR=${PO0_ASSET_DIR:-/po0-assets}
+if ! [ -r "$PO0_ASSET_DIR/po0-lib.sh" ]; then
+    printf '%s\n' "Missing Po0 bundle: $PO0_ASSET_DIR/po0-lib.sh" >&2
+    exit 1
+fi
+# shellcheck source=po0-lib.sh
+. "$PO0_ASSET_DIR/po0-lib.sh"
+
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 # shellcheck disable=SC2034
-SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0005
+SCRIPT_VERSION=PO0-20261027-1
 
 TRUE=0
 FALSE=1
@@ -131,6 +140,17 @@ killall() {
 # retry 5 command wget | head -c 1048576 会触发 retry，下载 5 次
 # command wget "$@" --tries=5 | head -c 1048576 不会触发 wget 自带的 retry，只下载 1 次
 wget() {
+    # Only known repository trees/custom rules are mapped; preserve argument boundaries.
+    local po0_arg po0_count=$#
+    while [ "$po0_count" -gt 0 ]; do
+        po0_arg=$1
+        shift
+        case "$po0_arg" in
+        http://* | https://*) po0_arg=$(po0_rewrite_url "$po0_arg") || return ;;
+        esac
+        set -- "$@" "$po0_arg"
+        po0_count=$((po0_count - 1))
+    done
     show_url_in_args "$@" >&2
     if command wget 2>&1 | grep -q BusyBox; then
         # busybox wget 没有重试功能
@@ -253,7 +273,8 @@ remove_alpine_rootfs() {
 }
 
 download_via_browser() {
-    local url=$1
+    local url
+    url=$(po0_rewrite_url "$1") || return
     local path=$2
 
     local os_dir=/os/alpine_for_browser
@@ -280,7 +301,7 @@ download_via_browser() {
 
     # 下载文件
     # shellcheck disable=SC2154
-    wget "$confhome/download-via-browser.js" -O "$os_dir/work/download-via-browser.js"
+    po0_copy_asset download-via-browser.js "$os_dir/work/download-via-browser.js"
     retry 5 chroot "$os_dir" node /work/download-via-browser.js "$url" "/work/download_file"
     cp "$os_dir/work/download_file" "$path"
 
@@ -295,9 +316,9 @@ download_via_browser() {
 }
 
 download() {
-    local url=$1
+    local url
+    url=$(po0_rewrite_url "$1") || return
     local path=$2
-    local can_use_cn_mirror=${3:-false}
 
     # 有ipv4地址无ipv4网关的情况下，aria2可能会用ipv4下载，而不是ipv6
     # axel 在 lightsail 上会占用大量cpu
@@ -342,10 +363,7 @@ download() {
         -O "1=$(basename "$path")" \
         -U curl/7.54.1
 
-    if ! aria2c "$url" "$@" &&
-        ! { $can_use_cn_mirror && is_in_china && is_any_ipv4_has_internet &&
-            url_cn=https://files.m.daocloud.io/$(echo "$url" | sed -E 's,^https?://,,i') &&
-            aria2c "$url_cn" "$@"; }; then
+    if ! aria2c "$url" "$@"; then
         error_and_exit "Failed to download $url"
     fi
 
@@ -412,38 +430,6 @@ is_allow_ping() {
     [ -n "$allow_ping" ] && [ "$allow_ping" = 1 ]
 }
 
-setup_nginx() {
-    apk add nginx
-    # shellcheck disable=SC2154
-    wget $confhome/logviewer.html -O /logviewer.html
-    wget $confhome/logviewer-nginx.conf -O /etc/nginx/http.d/default.conf
-
-    sed -i "s/@WEB_PORT@/$web_port/gi" /etc/nginx/http.d/default.conf
-
-    # rc-service -q nginx start
-    if pgrep nginx >/dev/null; then
-        nginx -s reload
-    else
-        nginx
-    fi
-}
-
-setup_websocketd() {
-    apk add websocketd
-    apk add coreutils
-
-    mkdir -p /tmp/web
-    echo 'Wrong Path' >/tmp/web/index.html
-    # shellcheck disable=SC2154
-    wget $confhome/logviewer.html -O /tmp/web$web_path
-
-    killall -q websocketd || true
-    # websocketd 遇到 \n 才推送，因此要转换 \r 为 \n
-    websocketd --port "$web_port" --loglevel=fatal --staticdir=/tmp/web \
-        stdbuf -oL -eL \
-        sh -c "if [ \"\$PATH_INFO\" = \"$web_path\" ]; then tail -fn+0 /reinstall.log | tr '\r' '\n' | grep -Fiv -e password -e token; fi" &
-}
-
 get_approximate_ram_size() {
     # lsmem 需要 util-linux
     if false && is_have_cmd lsmem; then
@@ -457,27 +443,10 @@ get_approximate_ram_size() {
     echo "$ram_size"
 }
 
-setup_web_if_enough_ram() {
-    total_ram=$(get_approximate_ram_size)
-    # 512内存才安装
-    if [ "$total_ram" -ge 400 ]; then
-        # lighttpd 虽然运行占用内存少，但安装占用空间大
-        # setup_lighttpd
-        # setup_nginx
-        setup_websocketd
-    fi
-}
-
-setup_lighttpd() {
-    apk add lighttpd
-    ln -sf /reinstall.html /var/www/localhost/htdocs/index.html
-    rc-service -q lighttpd start
-}
-
 get_ttys() {
     prefix=$1
     # shellcheck disable=SC2154
-    wget $confhome/ttys.sh -O- | sh -s $prefix
+    sh "$PO0_ASSET_DIR/ttys.sh" "$prefix"
 }
 
 find_xda() {
@@ -557,7 +526,6 @@ extract_env_from_cmdline() {
     fi
     ssh_port=${ssh_port:-22}
     rdp_port=${rdp_port:-3389}
-    web_port=${web_port:-80}
 }
 
 ensure_service_started() {
@@ -773,7 +741,8 @@ is_any_ipv4_has_internet() {
 }
 
 is_in_china() {
-    grep -q 1 /dev/netconf/*/is_in_china
+    # Po0 is configured explicitly; no geographic/network discovery is needed.
+    return 0
 }
 
 # 有 dhcpv4 不等于有网关，例如 vultr 纯 ipv6
@@ -1716,8 +1685,8 @@ install_alpine() {
     fi
 
     # 下载 fix-eth-name
-    download "$confhome/fix-eth-name.sh" /os/fix-eth-name.sh
-    download "$confhome/fix-eth-name.initd" /os/etc/init.d/fix-eth-name
+    po0_copy_asset fix-eth-name.sh /os/fix-eth-name.sh
+    po0_copy_asset fix-eth-name.initd /os/etc/init.d/fix-eth-name
     chmod +x /os/etc/init.d/fix-eth-name
     chroot /os rc-update add fix-eth-name boot
 
@@ -2184,7 +2153,7 @@ add_systemd_service() {
     if [ -n "$service_file" ]; then
         cp "$service_file" "$os_dir/etc/systemd/system/$service_name.service"
     else
-        download "$confhome/$service_name.service" "$os_dir/etc/systemd/system/$service_name.service"
+        po0_copy_asset "$service_name.service" "$os_dir/etc/systemd/system/$service_name.service"
     fi
     chroot "$os_dir" systemctl enable "$service_name.service"
 
@@ -2206,12 +2175,12 @@ add_fix_eth_name_systemd_service() {
 
     # 无需执行 systemctl daemon-reload
     # 因为 chroot 下执行会提示 Running in chroot, ignoring command 'daemon-reload'
-    download "$confhome/fix-eth-name.sh" "$os_dir/fix-eth-name.sh"
+    po0_copy_asset fix-eth-name.sh "$os_dir/fix-eth-name.sh"
     add_systemd_service "$os_dir" fix-eth-name
 }
 
 get_frpc_url() {
-    wget "$confhome/get-frpc-url.sh" -O- | sh -s "$@"
+    sh "$PO0_ASSET_DIR/get-frpc-url.sh" "$@"
 }
 
 add_frpc_systemd_service_if_need() {
@@ -2234,7 +2203,7 @@ add_frpc_systemd_service_if_need() {
 
         # frpc toml
         cp -f /configs/frpc.* "$os_dir/usr/local/etc/frpc/frpc.toml"
-        download "$confhome/frpc.service" /tmp/frpc.service
+        po0_copy_asset frpc.service /tmp/frpc.service
         if [ "$(chroot $os_dir systemctl --version | head -1 | awk '{print $2}')" -ge 247 ]; then
             # 新版本 systemd
             sed -i 's/^\[X-Service-New\]$/[Service]/' /tmp/frpc.service
@@ -2788,6 +2757,17 @@ get_url_hash() {
 }
 
 aria2c() {
+    # Only known repository trees/custom rules are mapped; preserve argument boundaries.
+    local po0_arg po0_count=$#
+    while [ "$po0_count" -gt 0 ]; do
+        po0_arg=$1
+        shift
+        case "$po0_arg" in
+        http://* | https://*) po0_arg=$(po0_rewrite_url "$po0_arg") || return ;;
+        esac
+        set -- "$@" "$po0_arg"
+        po0_count=$((po0_count - 1))
+    done
     if ! is_have_cmd aria2c; then
         apk add aria2
     fi
@@ -3454,7 +3434,7 @@ download_cloud_init_config() {
     recognize_ipv6_types=$3
 
     ci_file=$os_dir/etc/cloud/cloud.cfg.d/99_fallback.cfg
-    download $confhome/deprecated/cloud-init.yaml $ci_file
+    po0_copy_asset deprecated/cloud-init.yaml "$ci_file"
     # 删除注释行，除了第一行
     sed -i '1!{/^[[:space:]]*#/d}' $ci_file
 
@@ -3534,13 +3514,13 @@ modify_windows() {
 
     # 2. 允许 ping
     if is_allow_ping; then
-        download $confhome/windows-allow-ping.bat $os_dir/windows-allow-ping.bat
+        po0_copy_asset windows-allow-ping.bat "$os_dir/windows-allow-ping.bat"
         bats="$bats windows-allow-ping.bat"
     fi
 
     # 3. 合并分区
     # 可能 unattend.xml 已经设置了ExtendOSPartition，不过运行resize没副作用
-    download $confhome/windows-resize.bat $os_dir/windows-resize.bat
+    po0_copy_asset windows-resize.bat "$os_dir/windows-resize.bat"
     bats="$bats windows-resize.bat"
 
     # 4. 网络设置
@@ -3586,8 +3566,8 @@ EOF
         unzip -o -j "$os_dir/frpc/frpc.zip" '*/frpc.exe' -d "$os_dir/frpc/"
         rm -f "$os_dir/frpc/frpc.zip"
         cp -f /configs/frpc.* "$os_dir/frpc/"
-        download "$confhome/windows-frpc.xml" "$os_dir/frpc/frpc.xml"
-        download "$confhome/windows-frpc.bat" "$os_dir/frpc/frpc.bat"
+        po0_copy_asset windows-frpc.xml "$os_dir/frpc/frpc.xml"
+        po0_copy_asset windows-frpc.bat "$os_dir/frpc/frpc.bat"
         bats="$bats frpc\frpc.bat"
     fi
 
@@ -3639,7 +3619,7 @@ EOF
         unix2dos $scripts_ini
 
         # windows-del-gpo.bat
-        download $confhome/windows-del-gpo.bat $os_dir/windows-del-gpo.bat
+        po0_copy_asset windows-del-gpo.bat "$os_dir/windows-del-gpo.bat"
     else
         # 使用 SetupComplete
         setup_complete=$(get_path_in_correct_case $os_dir/Windows/Setup/Scripts/SetupComplete.cmd)
@@ -3909,6 +3889,7 @@ create_network_manager_config() {
 modify_linux() {
     local os_dir=$1
     info "Modify Linux"
+    po0_rewrite_target_repos "$os_dir"
 
     find_and_mount() {
         mount_point=$1
@@ -3924,7 +3905,7 @@ modify_linux() {
         for ethx in $(get_eths); do
             if is_staticv4 || is_staticv6; then
                 fix_sh=cloud-init-fix-onlink.sh
-                download "$confhome/deprecated/$fix_sh" "$os_dir/$fix_sh"
+                po0_copy_asset "deprecated/$fix_sh" "$os_dir/$fix_sh"
                 insert_into_file "$ci_file" after '^runcmd:' <<EOF
   - bash "/$fix_sh" && rm -f "/$fix_sh"
 EOF
@@ -4028,14 +4009,7 @@ EOF
             fi
         else
             # non-ELTS
-            if is_in_china; then
-                # 不处理 security 源 security.debian.org/debian-security 和 /etc/apt/mirrors/debian-security.list
-                for file in $os_dir/etc/apt/mirrors/debian.list $os_dir/etc/apt/sources.list; do
-                    if [ -f "$file" ]; then
-                        sed -i "s|deb\.debian\.org/debian|$deb_mirror|" "$file"
-                    fi
-                done
-            fi
+            po0_rewrite_target_repos "$os_dir"
         fi
 
         # 标记所有内核为自动安装
@@ -4370,7 +4344,7 @@ modify_os_on_disk() {
                 # find: /mnt/c/swapfile.sys: Permission denied
                 # shellcheck disable=SC1090
                 # find_file_ignore_case 也在这个文件里面
-                . <(wget -O- $confhome/windows-driver-utils.sh)
+                . "$PO0_ASSET_DIR/windows-driver-utils.sh"
                 if find_file_ignore_case /os/Windows/System32/ntoskrnl.exe >/dev/null 2>&1; then
                     # 其他地方会用到
                     is_windows() { true; }
@@ -5012,7 +4986,63 @@ get_cloud_image_part_size() {
     fi
 }
 
+# Rewrite actual package-manager URLs, including Debian/Ubuntu security suites.
+# RPM/zypper mirrorlist entries are disabled only in sections with a mapped baseurl.
+po0_emit_repo_section() {
+    if [ "$1" = 1 ]; then
+        printf '%s' "$2" | sed -E 's/^([[:space:]]*)(mirrorlist|metalink)([[:space:]]*=)/\1#\2\3/'
+    else
+        printf '%s' "$2"
+    fi
+}
+
+po0_rewrite_repo_file() {
+    local file=$1 line url mapped section='' mapped_base=0 tmp_file
+    tmp_file=$file.po0.$$
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+        '['*)
+            po0_emit_repo_section "$mapped_base" "$section"
+            section=''
+            mapped_base=0
+            ;;
+        esac
+        for url in $(printf '%s\n' "$line" | grep -Eo 'https?://[^[:space:]]+' || true); do
+            mapped=$(po0_rewrite_url "$url") || return 1
+            case "$line" in
+            *baseurl*=*)
+                if [ "$mapped" != "$url" ] || [ "${url#"$PO0_MIRROR_BASE"/}" != "$url" ]; then
+                    mapped_base=1
+                    line=$(printf '%s\n' "$line" | sed -E 's/^[[:space:]]*#[[:space:]]*(baseurl[[:space:]]*=)/\1/')
+                fi
+                ;;
+            esac
+            # ash and bash support literal parameter replacement; no eval or URL regex.
+            line=${line//"$url"/"$mapped"}
+        done
+        section="$section$line
+"
+    done <"$file" >"$tmp_file"
+    po0_emit_repo_section "$mapped_base" "$section" >>"$tmp_file"
+    cat "$tmp_file" >"$file"
+    rm -f "$tmp_file"
+}
+
+po0_rewrite_target_repos() {
+    local os_dir=$1 file
+    for file in "$os_dir"/etc/apt/sources.list \
+        "$os_dir"/etc/apt/sources.list.d/*.list \
+        "$os_dir"/etc/apt/sources.list.d/*.sources \
+        "$os_dir"/etc/apt/mirrors/*.list \
+        "$os_dir"/etc/yum.repos.d/*.repo \
+        "$os_dir"/etc/zypp/repos.d/*.repo; do
+        [ -f "$file" ] || continue
+        po0_rewrite_repo_file "$file"
+    done
+}
+
 chroot_dnf() {
+    po0_rewrite_target_repos /os
     if is_have_cmd_on_disk /os/ dnf; then
         chroot /os/ dnf -y "$@"
     else
@@ -5022,6 +5052,7 @@ chroot_dnf() {
 
 chroot_apt_update() {
     local os_dir=$1
+    po0_rewrite_target_repos "$os_dir"
 
     current_hash=$(cat $os_dir/etc/apt/sources.list $os_dir/etc/apt/sources.list.d/*.sources 2>/dev/null | md5sum)
     if ! [ "$saved_hash" = "$current_hash" ]; then
@@ -5328,6 +5359,7 @@ install_qcow_by_copy() {
     modify_el_ol() {
         info "Modify el ol"
         local os_dir=/os
+        po0_rewrite_target_repos "$os_dir"
 
         # resolv.conf
         cp_resolv_conf /os
@@ -5350,11 +5382,7 @@ install_qcow_by_copy() {
             # centos 7 eol 换源
             if [ -f /os/etc/yum.repos.d/CentOS-Base.repo ]; then
                 # 保持默认的 http 因为自带的 ssl 证书可能过期
-                if is_in_china; then
-                    mirror=mirror.nju.edu.cn/centos-vault
-                else
-                    mirror=vault.centos.org
-                fi
+                mirror=$PO0_MIRROR_HOST/centos-vault
                 sed -Ei -e 's,(mirrorlist=),#\1,' \
                     -e "s,#(baseurl=http://)mirror.centos.org,\1$mirror," /os/etc/yum.repos.d/CentOS-Base.repo
             fi
@@ -5635,19 +5663,8 @@ EOF
         cp $os_dir/etc/default/grub $os_dir/etc/default/grub.orig
         echo 'GRUB_DISABLE_OS_PROBER=true' >>$os_dir/etc/default/grub
 
-        # 更改源
-        if is_in_china; then
-            # 22.04 使用 /etc/apt/sources.list
-            # 24.04 使用 /etc/apt/sources.list.d/ubuntu.sources
-            for file in $os_dir/etc/apt/sources.list $os_dir/etc/apt/sources.list.d/ubuntu.sources; do
-                if [ -f $file ]; then
-                    # cn.archive.ubuntu.com 不在国内还严重丢包
-                    # https://www.itdog.cn/ping/cn.archive.ubuntu.com
-                    sed -i 's/archive.ubuntu.com/mirror.nju.edu.cn/' $file # x64
-                    sed -i 's/ports.ubuntu.com/mirror.nju.edu.cn/' $file   # arm
-                fi
-            done
-        fi
+        # Both legacy sources.list and Deb822 ubuntu.sources, including security.
+        po0_rewrite_target_repos "$os_dir"
 
         # 避免 do-release-upgrade 时自动执行 dpkg-reconfigure grub-xx 但是 efi/biosgrub 分区不存在而导致报错
         # shellcheck disable=SC2046
@@ -6348,7 +6365,7 @@ EOF
 
     # 脚本还有关闭ipv6隐私id的功能，所以不能省略
     # 合并脚本
-    wget $confhome/windows-set-netconf.bat -O- >>$target
+    po0_copy_asset windows-set-netconf.bat - >>"$target"
     unix2dos $target
 }
 
@@ -6359,7 +6376,7 @@ create_win_change_rdp_port_script() {
     info "Create win change rdp port script"
 
     echo "set RdpPort=$rdp_port" >$target
-    wget $confhome/windows-change-rdp-port.bat -O- >>$target
+    po0_copy_asset windows-change-rdp-port.bat - >>"$target"
     unix2dos $target
 }
 
@@ -6641,7 +6658,7 @@ install_windows() {
 
     # find_file_ignore_case 也在这个文件里面
     # shellcheck disable=SC1090
-    . <(wget -O- $confhome/windows-driver-utils.sh)
+    . "$PO0_ASSET_DIR/windows-driver-utils.sh"
 
     apk add wimlib
 
@@ -7644,11 +7661,7 @@ EOF
         # 路径是文件，应该不会弹出 anubis 验证？
         if [ "$dir" = stable-virtio ]; then
             if ! dir=$(get_latest_virtio_dir "$baseurl"); then
-                if is_any_ipv4_has_internet &&
-                    mirror_baseurl=https://files.m.daocloud.io/$(echo "$baseurl" | sed -E 's,^https?://,,i') &&
-                    dir=$(get_latest_virtio_dir "$mirror_baseurl"); then
-                    baseurl=$mirror_baseurl
-                elif [ "$arch_wim" = x86 ] || [ "$arch_wim" = x86_64 ]; then
+                if [ "$arch_wim" = x86 ] || [ "$arch_wim" = x86_64 ]; then
                     add_driver_virtio_from_rpm "$@"
                     return
                 else
@@ -8165,7 +8178,7 @@ EOF
 
     # 修改应答文件
     apk add xmlstarlet
-    download $confhome/windows.xml /tmp/autounattend.xml
+    po0_copy_asset windows.xml /tmp/autounattend.xml
     locale=$(get_selected_image_prop 'Default Language')
     use_default_rdp_port=$(is_need_change_rdp_port && echo false || echo true)
 
@@ -8312,7 +8325,7 @@ EOF
     startnet_cmd=$(get_path_in_correct_case /wim/Windows/System32/startnet.cmd)
     winpeshl_ini=$(get_path_in_correct_case /wim/Windows/System32/winpeshl.ini)
 
-    download $confhome/windows-setup.bat $startnet_cmd
+    po0_copy_asset windows-setup.bat "$startnet_cmd"
     # dism 手动释放镜像时用
     # sed -i "s|@image_name@|$image_name|" "$startnet.cmd"
 
@@ -8391,7 +8404,7 @@ EOF
         if false; then
             # 使用 autounattend.xml
             # win7 在此阶段找不到网卡
-            download $confhome/windows-resize.bat /wim/windows-resize.bat
+            po0_copy_asset windows-resize.bat /wim/windows-resize.bat
             for ethx in $(get_eths); do
                 create_win_set_netconf_script /wim/windows-set-netconf-$ethx.bat
             done
@@ -8743,7 +8756,6 @@ trans() {
     set_max_sectors_kb_for_tencent_cloud_liveos
 
     if [ "$distro" != "alpine" ]; then
-        setup_web_if_enough_ram
         # util-linux 包含 lsblk
         # util-linux 可自动探测 mount 格式
         apk add util-linux
@@ -8846,8 +8858,6 @@ trans() {
     fi
 
     info 'done'
-    # 让 web 输出全部内容
-    sleep 5
 }
 
 # 脚本入口
@@ -8872,13 +8882,9 @@ rm -f /etc/runlevels/default/local
 extract_env_from_cmdline
 
 # 带参数运行部分
-# 重新下载并 exec 运行新脚本
+# A running installer cannot replace one file from a versioned bundle.
 if [ "$1" = "update" ]; then
-    info 'update script'
-    # shellcheck disable=SC2154
-    wget -O /trans.sh "$confhome/trans.sh"
-    chmod +x /trans.sh
-    exec /trans.sh
+    error_and_exit 'Live script updates are disabled; prepare a new complete Po0 bundle before reboot.'
 elif [ "$1" = "alpine" ]; then
     info 'switch to alpine'
     distro=alpine

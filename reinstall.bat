@@ -2,9 +2,7 @@
 mode con cp select=437 >nul
 setlocal EnableDelayedExpansion
 
-set confhome=https://raw.githubusercontent.com/bin456789/reinstall/main
-set confhome_cn=https://cnb.cool/bin456789/reinstall/-/git/raw/main
-rem set confhome_cn=https://www.ghproxy.cc/https://raw.githubusercontent.com/bin456789/reinstall/main
+set mirror=http://mirrors.tencentyun.com
 
 set pkgs=curl,cpio,p7zip,dos2unix,jq,xz,gzip,zstd,openssl,bind-utils,libiconv,binutils
 set cmds=curl,cpio,p7zip,dos2unix,jq,xz,gzip,zstd,openssl,nslookup,iconv,ar
@@ -34,38 +32,7 @@ rem if not exist %tmp% (
 rem     md %tmp%
 rem )
 
-rem 下载 geoip
-if not exist geoip (
-    rem www.cloudflare.com/dash.cloudflare.com 国内访问的是美国服务器，而且部分地区被墙
-    call :download http://www.qualcomm.cn/cdn-cgi/trace %~dp0geoip || goto :download_failed
-)
-
-rem 判断是否有 loc=
-findstr /c:"loc=" geoip >nul
-if errorlevel 1 (
-    echo Invalid geoip file
-    del geoip
-    exit /b 1
-)
-
-rem 检查是否国内
-findstr /c:"loc=CN" geoip >nul
-if not errorlevel 1 (
-    rem mirrors.tuna.tsinghua.edu.cn 会强制跳转 https
-    set mirror=http://mirror.nju.edu.cn
-    if defined confhome_cn (
-        set confhome=!confhome_cn!
-    ) else if defined github_proxy (
-        echo !confhome! | findstr /c:"://raw.githubusercontent.com/" >nul
-        if not errorlevel 1 (
-            set confhome=!confhome:http://=https://!
-            set confhome=!confhome:https://raw.githubusercontent.com=%github_proxy%!
-        )
-    )
-) else (
-    rem 服务器在美国 equinix 机房，不是 cdn
-    set mirror=http://mirrors.kernel.org
-)
+rem Po0 uses the internal mirror; do not request public geolocation.
 
 call :check_cygwin_installed || (
     rem win10 arm 支持运行 x86 软件
@@ -170,10 +137,14 @@ call :check_cygwin_installed || (
 rem 在c盘根目录下执行 cygpath -ua . 会得到 /cygdrive/c，因此末尾要有 /
 for /f %%a in ('%SystemDrive%\cygwin\bin\cygpath -ua ./') do set thisdir=%%a
 
-rem 下载 reinstall.sh
+rem Use the complete local Po0 bundle, never fetch an upstream script.
 if not exist reinstall.sh (
-    call :download_with_curl %confhome%/reinstall.sh %thisdir%reinstall.sh || goto :download_failed
-    call :chmod a+x %thisdir%reinstall.sh
+    echo Extract the complete reinstall-Po0 bundle first.
+    exit /b 1
+)
+if not exist po0-lib.sh (
+    echo Missing po0-lib.sh in reinstall-Po0 bundle.
+    exit /b 1
 )
 
 rem %* 无法处理 --iso https://x.com/?yyy=123

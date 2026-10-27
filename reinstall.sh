@@ -6,12 +6,11 @@
 # alpine 默认没有 bash，因此 shebang 用 sh，再 exec 切换到 bash
 
 set -eE
-confhome=https://raw.githubusercontent.com/bin456789/reinstall/main
-confhome_cn=https://cnb.cool/bin456789/reinstall/-/git/raw/main
-# confhome_cn=https://www.ghproxy.cc/https://raw.githubusercontent.com/bin456789/reinstall/main
+# Resources are supplied as one local, version-matched Po0 bundle.
+confhome=file:///po0-assets
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
-SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0005
+SCRIPT_VERSION=PO0-20261027-1
 
 # 记录要用到的 windows 程序，运行时输出删除 \r
 WINDOWS_EXES='cmd powershell wmic reg diskpart netsh bcdedit mountvol'
@@ -54,6 +53,14 @@ fi
 # 记录日志，过滤含有 password 的行
 # exec > >(tee >(grep -iv password >>/reinstall.log)) 2>&1
 THIS_SCRIPT=$(readlink -f "$0")
+PO0_ASSET_DIR=$(dirname "$THIS_SCRIPT")
+if [ ! -s "$PO0_ASSET_DIR/po0-lib.sh" ]; then
+    echo 'Extract the complete reinstall-Po0 bundle; reinstall.sh alone is insufficient.' >&2
+    exit 1
+fi
+# shellcheck source=po0-lib.sh
+. "$PO0_ASSET_DIR/po0-lib.sh"
+po0_check_bundle || exit 1
 trap 'trap_err $LINENO $?' ERR
 
 trap_err() {
@@ -109,7 +116,6 @@ Usage: $reinstall_____ anolis      7|8|23
                        [--password    PASSWORD]
                        [--ssh-key     KEY]
                        [--ssh-port    PORT]
-                       [--web-port    PORT]
                        [--frpc-config PATH]
 
                        For Windows Only:
@@ -121,7 +127,7 @@ Usage: $reinstall_____ anolis      7|8|23
                        For Linux Only:
                        [--no-cloud-kernel]         (only for Debian/Ubuntu/Alpine)
 
-       Manual:         https://github.com/bin456789/reinstall
+       Manual:         https://github.com/mihomoQ/reinstall-Po0
 
 EOF
     exit 1
@@ -186,6 +192,14 @@ show_url_in_args() {
 }
 
 curl() {
+    local arg args=()
+    for arg in "$@"; do
+        case "$arg" in
+            http://*|https://*) arg=$(po0_rewrite_url "$arg") || return ;;
+        esac
+        args+=("$arg")
+    done
+    set -- "${args[@]}"
     is_have_cmd curl || install_pkg curl
 
     # 显示 url
@@ -217,22 +231,8 @@ mask2cidr() {
 }
 
 is_in_china() {
-    [ "$force_cn" = 1 ] && return 0
-
-    if [ -z "$_loc" ]; then
-        # www.cloudflare.com/dash.cloudflare.com 国内访问的是美国服务器，而且部分地区被墙
-        # 没有ipv6 www.visa.cn
-        # 没有ipv6 www.bose.cn
-        # 没有ipv6 www.garmin.com.cn
-        # 备用 www.prologis.cn
-        # 备用 www.autodesk.com.cn
-        # 备用 www.keysight.com.cn
-        if ! _loc=$(curl -L http://www.qualcomm.cn/cdn-cgi/trace | grep '^loc=' | cut -d= -f2 | grep .); then
-            error_and_exit "Can not get location."
-        fi
-        echo "Location: $_loc" >&2
-    fi
-    [ "$_loc" = CN ]
+    # Po0 uses its internal mirrors; no external geolocation request.
+    return 0
 }
 
 is_in_windows() {
@@ -389,7 +389,7 @@ test_url_grace() {
 
 test_url_real() {
     grace=$1
-    url=$2
+    url=$(po0_rewrite_url "$2") || return
     expect_types=$3
     var_to_eval=$4
     info test url
@@ -652,7 +652,7 @@ wmic() {
     fi
 
     if ! [ -f "$tmp/wmic.ps1" ]; then
-        curl -Lo "$tmp/wmic.ps1" "$confhome/wmic.ps1"
+        po0_copy_asset wmic.ps1 "$tmp/wmic.ps1"
     fi
 
     powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
@@ -746,9 +746,6 @@ assert_cpu_supports_x86_64_v3() {
     fi
 }
 
-get_http_log_url() {
-    echo "http://IP$([ "${web_port:-80}" = 80 ] || echo :$web_port)$web_path"
-}
 
 # 判断语言字符是否合法，允许全名和缩写
 is_valid_lang_chars() {
@@ -1450,7 +1447,15 @@ setos() {
     info set $step $distro $releasever
 
     set_osvar() {
-        set_var "${step}_$1" "$2"
+        local value=$2
+        case "$value" in
+            http://*|https://*) value=$(po0_rewrite_url "$value") || return ;;
+            mirror.nju.edu.cn/*|mirrors.nju.edu.cn/*|deb.debian.org/*)
+                value=$(po0_rewrite_url "http://$value") || return
+                value=${value#*://}
+                ;;
+        esac
+        set_var "${step}_$1" "$value"
     }
 
     setos_netboot.xyz() {
@@ -1588,7 +1593,7 @@ Continue?
             set_osvar udeb_mirror "$udeb_mirror"
             set_osvar vmlinuz "https://$initrd_mirror/$initrd_dir/linux"
             set_osvar initrd "https://$initrd_mirror/$initrd_dir/initrd.gz"
-            set_osvar ks "$confhome/debian.cfg"
+            set_osvar ks "file:///po0-assets/debian.cfg"
             set_osvar firmware "$cdimage_mirror/unofficial/non-free/firmware/$codename/current/firmware.cpio.gz"
             set_osvar codename "$codename"
         fi
@@ -1621,7 +1626,7 @@ Continue?
 
             set_osvar vmlinuz "$mirror/linux"
             set_osvar initrd "$mirror/initrd.gz"
-            set_osvar ks "$confhome/debian.cfg"
+            set_osvar ks "file:///po0-assets/debian.cfg"
             set_osvar deb_mirror "$hostname/kali"
             set_osvar udeb_mirror "$hostname/kali"
             set_osvar codename "$codename"
@@ -3368,7 +3373,7 @@ get_grub_efi_filename() {
     esac
 }
 
-install_grub_linux_efi() {
+download_grub_linux_efi() {
     info 'download grub efi'
 
     # fedora 39 的 efi 无法识别 opensuse tumbleweed 的 xfs
@@ -3410,7 +3415,13 @@ install_grub_linux_efi() {
         curl -Lo $tmp/$grub_efi $mirror$ports/tumbleweed/repo/oss/EFI/BOOT/grub.efi
     fi
 
-    add_efi_entry_in_linux $tmp/$grub_efi
+    [ -s "$tmp/$grub_efi" ] || error_and_exit 'Empty GRUB EFI payload.'
+}
+
+install_grub_linux_efi() {
+    grub_efi=$(get_grub_efi_filename)
+    [ -s "$tmp/$grub_efi" ] || error_and_exit 'GRUB EFI payload was not prepared.'
+    add_efi_entry_in_linux "$tmp/$grub_efi"
 }
 
 download_and_extract_apk() {
@@ -3620,9 +3631,9 @@ build_extra_cmdline() {
     # 会将 extra.xxx=yyy 写入新系统的 /etc/modprobe.d/local.conf
     # https://answers.launchpad.net/ubuntu/+question/249456
     # https://salsa.debian.org/installer-team/rootskel/-/blob/master/src/lib/debian-installer-startup.d/S02module-params?ref_type=heads
-    for key in confhome hold force_boot_mode force_cn force_old_windows_setup cloud_image no_cloud_kernel no_auto_drivers main_disk \
+    for key in hold force_boot_mode force_cn force_old_windows_setup cloud_image no_cloud_kernel no_auto_drivers main_disk \
         elts deb_mirror \
-        username ssh_port rdp_port web_port web_path allow_ping; do
+        username ssh_port rdp_port allow_ping po0_security_host; do
         value=${!key}
         if [ -n "$value" ]; then
             is_need_quote "$value" &&
@@ -3646,7 +3657,7 @@ build_extra_cmdline() {
 
 echo_tmp_ttys() {
     if false; then
-        curl -L $confhome/ttys.sh | sh -s "console="
+        po0_copy_asset ttys.sh - | sh -s "console="
     else
         case "$basearch" in
         x86_64) echo "console=ttyS0,115200n8 console=tty0" ;;
@@ -3855,7 +3866,6 @@ mod_initrd_debian_kali() {
     # 修改 udeb 依赖
 
     # 直接覆盖 net-retriever，方便调试
-    # curl -Lo /usr/lib/debian-installer/retriever/net-retriever $confhome/net-retriever
 
     change_priority() {
         while IFS= read -r line; do
@@ -4013,17 +4023,17 @@ EOF
     create_can_use_cloud_kernel_sh can_use_cloud_kernel.sh
 
     # 下载 fix-eth-name 脚本
-    curl -LO "$confhome/fix-eth-name.sh"
-    curl -LO "$confhome/fix-eth-name.service"
+    po0_copy_asset fix-eth-name.sh fix-eth-name.sh
+    po0_copy_asset fix-eth-name.service fix-eth-name.service
 
     # 有段时间 kali initrd 删除了原版 wget
     # 但 initrd 的 busybox wget 又不支持 https
     # 因此改成在这里下载
-    curl -LO "$confhome/get-xda.sh"
-    curl -LO "$confhome/ttys.sh"
+    po0_copy_asset get-xda.sh get-xda.sh
+    po0_copy_asset ttys.sh ttys.sh
     if [ -n "$frpc_config" ]; then
-        curl -LO "$confhome/get-frpc-url.sh"
-        curl -LO "$confhome/frpc.service"
+        po0_copy_asset get-frpc-url.sh get-frpc-url.sh
+        po0_copy_asset frpc.service frpc.service
     fi
 
     # 可以节省一点内存？
@@ -4079,15 +4089,6 @@ EOF
     mkdir_clear $tmp/fdisk
     download_and_extract_deb udeb fdisk-udeb $tmp/fdisk
     cp -f $tmp/fdisk/usr/sbin/fdisk usr/sbin/
-
-    # 下载 websocketd
-    # debian 11+ 才有 websocketd
-    if [ "$distro" = kali ] ||
-        { [ "$distro" = debian ] && [ "$releasever" -ge 11 ]; }; then
-        mkdir_clear $tmp/websocketd
-        download_and_extract_deb deb websocketd $tmp/websocketd
-        cp -f $tmp/websocketd/usr/bin/websocketd usr/bin/
-    fi
 
     # 提前下载 pci-hyperv
     # udeb 没有这个模块 curl https://deb.debian.org/debian/dists/stable/main/Contents-udeb-amd64.gz | zcat | grep pci-hyperv
@@ -4325,20 +4326,17 @@ get_ip_conf_cmd() {
 
     sh=/initrd-network.sh
     if is_found_ipv4_netconf && is_found_ipv6_netconf && [ "$ipv4_mac" = "$ipv6_mac" ]; then
-        echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '$ipv6_addr' '$ipv6_gateway' '$is_in_china' '$ipv6_extra_addrs'"
+        echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '$ipv6_addr' '$ipv6_gateway' '$is_in_china' '$ipv6_extra_addrs' || exit 1"
     else
         if is_found_ipv4_netconf; then
-            echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '' '' '$is_in_china' ''"
+            echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '' '' '$is_in_china' '' || exit 1"
         fi
         if is_found_ipv6_netconf; then
-            echo "'$sh' '$ipv6_mac' '' '' '$ipv6_addr' '$ipv6_gateway' '$is_in_china' '$ipv6_extra_addrs'"
+            echo "'$sh' '$ipv6_mac' '' '' '$ipv6_addr' '$ipv6_gateway' '$is_in_china' '$ipv6_extra_addrs' || exit 1"
         fi
     fi
 }
 
-is_need_web_viewer() {
-    ! { [ "$distro" = netboot.xyz ] || is_alpine_live; }
-}
 
 mod_initrd_alpine() {
     # hack 1 v3.19 和之前的 virt 内核需添加 ipv6 模块
@@ -4413,14 +4411,12 @@ EOF
     # wget: bad header line: �
     insert_into_file init before '^exec switch_root' <<EOF
         # trans
-        # echo "wget --no-check-certificate -O- $confhome/trans.sh | /bin/ash" >\$sysroot/etc/local.d/trans.start
-        # wget --no-check-certificate -O \$sysroot/etc/local.d/trans.start $confhome/trans.sh
         cp /trans.sh \$sysroot/etc/local.d/trans.start
         chmod a+x \$sysroot/etc/local.d/trans.start
         ln -s /etc/init.d/local \$sysroot/etc/runlevels/default/
 
         # 配置 + 自定义驱动
-        for dir in /configs /custom_drivers; do
+        for dir in /configs /custom_drivers /po0-assets; do
             if [ -d \$dir ]; then
                 cp -r \$dir \$sysroot/
                 rm -rf \$dir
@@ -4448,6 +4444,26 @@ EOF
     fi
 }
 
+po0_embed_assets() {
+    local root=$1 asset
+    mkdir -p "$root/po0-assets" "$root/configs"
+    while IFS= read -r asset || [ -n "$asset" ]; do
+        case "$asset" in ''|\#*) continue ;; esac
+        mkdir -p "$root/po0-assets/$(dirname "$asset")"
+        po0_copy_asset "$asset" "$root/po0-assets/$asset"
+    done <"$PO0_ASSET_DIR/po0-assets.list"
+    # Preserve the evaluated mirror origin even when supplied through the environment.
+    printf "PO0_MIRROR_BASE='%s'\n" "$PO0_MIRROR_BASE" >"$root/po0-assets/po0.conf"
+    if [ -f "$PO0_ASSET_DIR/po0-mirrors.conf" ]; then
+        cp "$PO0_ASSET_DIR/po0-mirrors.conf" "$root/po0-assets/po0-mirrors.conf"
+    fi
+    if [ -r /run/systemd/resolve/resolv.conf ]; then
+        cp /run/systemd/resolve/resolv.conf "$root/configs/po0-resolv.conf"
+    elif [ -r /etc/resolv.conf ]; then
+        cp /etc/resolv.conf "$root/configs/po0-resolv.conf"
+    fi
+}
+
 mod_initrd() {
     info "mod $nextos_distro initrd"
     install_pkg gzip cpio
@@ -4470,18 +4486,24 @@ mod_initrd() {
 
     # shellcheck disable=SC2046
     # nonmatching 是精确匹配路径
-    zcat /reinstall-initrd | cpio -idm \
-        $(is_in_windows && echo --nonmatching 'dev/console' --nonmatching 'dev/null')
+    gzip -t "$tmp/reinstall-initrd"
+    (
+        set -o pipefail
+        zcat "$tmp/reinstall-initrd" | cpio -idm \
+            $(is_in_windows && echo --nonmatching 'dev/console' --nonmatching 'dev/null')
+    )
 
-    curl -Lo $initrd_dir/trans.sh $confhome/trans.sh
+    po0_copy_asset trans.sh "$initrd_dir/trans.sh"
     if ! grep -iq "$SCRIPT_VERSION" $initrd_dir/trans.sh; then
         error_and_exit "
 This script is outdated, please download reinstall.sh again.
 脚本有更新，请重新下载 reinstall.sh"
     fi
 
-    curl -Lo $initrd_dir/initrd-network.sh $confhome/initrd-network.sh
+    po0_copy_asset initrd-network.sh "$initrd_dir/initrd-network.sh"
     chmod a+x $initrd_dir/trans.sh $initrd_dir/initrd-network.sh
+
+    po0_embed_assets "$initrd_dir"
 
     # 保存配置
     mkdir -p $initrd_dir/configs
@@ -4520,7 +4542,7 @@ This script is outdated, please download reinstall.sh again.
     # 添加自定义 windows 驱动
     if [ "$distro" = windows ] && [ -n "$custom_infs" ]; then
         # shellcheck disable=SC1090
-        . <(curl -L $confhome/windows-driver-utils.sh)
+        . "$PO0_ASSET_DIR/windows-driver-utils.sh"
         echo "$custom_infs" | while read -r inf; do
             parse_inf_and_cp_driever "$inf" "$initrd_dir/custom_drivers" "$basearch_alt" true
         done
@@ -4544,7 +4566,12 @@ This script is outdated, please download reinstall.sh again.
     # -c    Identical to "-H newc", use the new (SVR4)
     #       portable format.If you wish the old portable
     #       (ASCII) archive format, use "-H odc" instead.
-    find . | cpio --quiet -o -H newc -R 0:0 | gzip -1 >/reinstall-initrd
+    (
+        set -o pipefail
+        find . | cpio --quiet -o -H newc -R 0:0 | gzip -1 >"$tmp/reinstall-initrd.new"
+    )
+    gzip -t "$tmp/reinstall-initrd.new"
+    mv "$tmp/reinstall-initrd.new" "$tmp/reinstall-initrd"
     cd - >/dev/null
 }
 
@@ -4665,33 +4692,8 @@ init_basearch() {
 }
 
 init_confhome() {
-    # 设置 confhome
-    # 未测试
-    if false && [[ "$confhome" = http*://raw.githubusercontent.com/* ]]; then
-        repo=$(echo $confhome | cut -d/ -f4,5)
-        branch=$(echo $confhome | cut -d/ -f6)
-        # 避免脚本更新时，文件不同步造成错误
-        if [ -z "$commit" ]; then
-            commit=$(curl -L https://api.github.com/repos/$repo/git/refs/heads/$branch |
-                grep '"sha"' | grep -Eo '[0-9a-f]{40}')
-        fi
-        # shellcheck disable=SC2001
-        confhome=$(echo "$confhome" | sed "s/main$/$commit/")
-    fi
-
-    # 设置国内代理
-    # 要在使用 wmic 前设置，否则国内机器会从国外源下载 wmic.ps1
-    # gitee 不支持ipv6
-    # jsdelivr 有12小时缓存
-    # https://github.com/XIU2/UserScript/blob/master/GithubEnhanced-High-Speed-Download.user.js#L31
-    if is_in_china; then
-        if [ -n "$confhome_cn" ]; then
-            confhome=$confhome_cn
-        elif [ -n "$github_proxy" ] && [[ "$confhome" = http*://raw.githubusercontent.com/* ]]; then
-            confhome=${confhome/http:\/\//https:\/\/}
-            confhome=${confhome/https:\/\/raw.githubusercontent.com/$github_proxy}
-        fi
-    fi
+    # initrd helpers and preseed always come from the same local bundle.
+    confhome=file:///po0-assets
 }
 
 remove_exist_reinstall_efi_dir() {
@@ -4964,9 +4966,7 @@ for o in ci installer debug minimal no-cloud-kernel no-auto-drivers allow-ping f
     ssh-port: \
     ssh-key: public-key: \
     rdp-port: \
-    web-port: http-port: \
     allow-ping: \
-    commit: \
     frpc-conf: frpc-config: \
     target-disk: \
     force-boot-mode: \
@@ -5027,10 +5027,6 @@ while true; do
         ;;
     -h | --help)
         usage_and_exit
-        ;;
-    --commit)
-        commit=$2
-        shift 2
         ;;
     --ci)
         cloud_image=1
@@ -5196,11 +5192,6 @@ EOF
         rdp_port=$2
         shift 2
         ;;
-    --web-port | --http-port)
-        is_port_valid $2 || error_and_exit "Invalid $1 value: $2"
-        web_port=$2
-        shift 2
-        ;;
     --add-driver)
         [ -n "$2" ] || error_and_exit "Need value for $1"
 
@@ -5298,6 +5289,12 @@ done
 # 检查必须的参数
 verify_os_args
 
+# Legacy ISO installers need a different asset transport than the default
+# cloud-image paths. Do not schedule a boot into a known incomplete setup.
+if is_force_use_installer; then
+    error_and_exit "Po0 does not yet bundle legacy --installer assets. Use the default installation method."
+fi
+
 # 用户名
 if ! is_netboot_xyz && [ -z "$username" ]; then
     prompt_username
@@ -5357,36 +5354,26 @@ else
     setos nextos alpine $alpine_ver_for_trans
 fi
 
-# 有的机器开启了 kexec，例如腾讯云轻量 debian，要禁用
-if [ -f /etc/default/kexec ]; then
-    sed -i 's/LOAD_KEXEC=true/LOAD_KEXEC=false/' /etc/default/kexec
+# Only Debian stable uses the independent Debian security repository.
+if [ "$nextos_distro" = debian ] && ! is_debian_elts; then
+    po0_security_host=$PO0_MIRROR_HOST
 fi
 
-# 一切就绪，正式下载内核和添加引导项
-# 先删除之前的启动项，再设置 trap
-# 暂时不用 trap，因为 bat 下无效
-remove_exist_reinstall
-# trap 'reset_and_exit true' SIGINT
-
-# 下载 netboot.xyz / 内核
+# Stage payloads without overwriting files referenced by an existing boot entry.
 # shellcheck disable=SC2154
 if is_netboot_xyz; then
     if is_efi; then
-        if is_in_windows; then
-            add_efi_entry_in_windows $nextos_efi
-        else
-            add_efi_entry_in_linux $nextos_efi
-        fi
+        curl -Lo "$tmp/netboot.xyz.efi" "$nextos_efi"
     else
-        curl -Lo /reinstall-vmlinuz $nextos_vmlinuz
+        curl -Lo "$tmp/reinstall-vmlinuz" "$nextos_vmlinuz"
     fi
 else
     # 下载 nextos 内核
     info download vmlnuz and initrd
-    curl -Lo /reinstall-vmlinuz $nextos_vmlinuz
-    curl -Lo /reinstall-initrd $nextos_initrd
+    curl -Lo "$tmp/reinstall-vmlinuz" "$nextos_vmlinuz"
+    curl -Lo "$tmp/reinstall-initrd" "$nextos_initrd"
     if is_use_firmware; then
-        curl -Lo /reinstall-firmware $nextos_firmware
+        curl -Lo "$tmp/reinstall-firmware" "$nextos_firmware"
     fi
 fi
 
@@ -5395,9 +5382,41 @@ if [ "$nextos_distro" = alpine ] || is_distro_like_debian "$nextos_distro"; then
     mod_initrd
 fi
 
-# web 路径
-if is_need_web_viewer; then
-    web_path="/$(tr -dc "A-Za-z0-9" </dev/urandom | head -c8)"
+
+# Linux EFI also needs an external GRUB image, prepared before boot changes.
+if is_need_boot_vmlinuz && ! is_in_windows && is_efi; then
+    download_grub_linux_efi
+fi
+
+# Kernel/initrd, Linux EFI GRUB and local helpers are ready. Update boot entries.
+if is_netboot_xyz && is_efi; then
+    [ -s "$tmp/netboot.xyz.efi" ] || error_and_exit 'Empty EFI payload.'
+else
+    [ -s "$tmp/reinstall-vmlinuz" ] || error_and_exit 'Empty kernel payload.'
+    if ! is_netboot_xyz; then
+        [ -s "$tmp/reinstall-initrd" ] || error_and_exit 'Empty initrd payload.'
+    fi
+fi
+remove_exist_reinstall
+if is_netboot_xyz && is_efi; then
+    if is_in_windows; then
+        add_efi_entry_in_windows "$tmp/netboot.xyz.efi"
+    else
+        add_efi_entry_in_linux "$tmp/netboot.xyz.efi"
+    fi
+else
+    mv "$tmp/reinstall-vmlinuz" /reinstall-vmlinuz
+    if ! is_netboot_xyz; then
+        mv "$tmp/reinstall-initrd" /reinstall-initrd
+    fi
+    if is_use_firmware; then
+        mv "$tmp/reinstall-firmware" /reinstall-firmware
+    fi
+fi
+
+# Disable kexec only after all installer resources have been prepared.
+if [ -f /etc/default/kexec ]; then
+    sed -i 's/LOAD_KEXEC=true/LOAD_KEXEC=false/' /etc/default/kexec
 fi
 
 # 将内核/netboot.xyz.lkrn 放到正确的位置
@@ -5588,7 +5607,6 @@ echo "$distro $releasever"
 
 ssh_port=${ssh_port:-22}
 rdp_port=${rdp_port:-3389}
-web_port=${web_port:-80}
 
 if [ "$distro" = netboot.xyz ]; then
     :
@@ -5611,7 +5629,6 @@ elif [ "$distro" = fnos ]; then
         echo "Password: $password"
     fi
     echo "SSH Port: $ssh_port"
-    echo "WEB: $(get_http_log_url)"
 
     info "After Install"
 
@@ -5626,7 +5643,6 @@ elif [ "$distro" = windows ]; then
     echo "Username: $username"
     echo "Password: $password"
     echo "SSH Port: $ssh_port"
-    echo "WEB: $(get_http_log_url)"
 
     info "After Install"
     if is_administrator_username "$username"; then
@@ -5646,7 +5662,6 @@ elif [ "$distro" = dd ]; then
         echo "Password: $password"
     fi
     echo "SSH Port: $ssh_port"
-    echo "WEB: $(get_http_log_url)"
 
     info "After Install"
     if [ -n "$cloud_data" ]; then
@@ -5669,7 +5684,6 @@ else
         echo "Password: $password"
     fi
     echo "SSH Port: $ssh_port"
-    echo "WEB: $(get_http_log_url)"
 
     info "After Install"
     echo "Username: $username"

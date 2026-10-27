@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def build(destination: Path) -> Path:
     names = ROOT.joinpath('po0-assets.list').read_text(encoding='utf-8').splitlines()
     names += ['LICENSE', 'README.md', 'README.en.md', 'README.upstream.md',
-              'README.upstream.en.md', 'po0.conf.example', 'po0-mirrors.conf.example']
+              'README.upstream.en.md', 'po0.conf.example', 'po0-mirrors.conf.example',
+              'docs/live-test-2026-10-27.md']
     members: dict[str, bytes] = {}
     for name in dict.fromkeys(names):
         if not name or name.startswith('#'):

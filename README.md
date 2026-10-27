@@ -2,7 +2,7 @@
 
 面向 Po0 内网环境的系统重装脚本，基于 [bin456789/reinstall](https://github.com/bin456789/reinstall)，保留上游多发行版选择及 GPL-3.0 许可证。
 
-**当前为适配开发版，尚未完成真实重装和重启后的 SSH 验证。** 已完成隔离测试、安装器语法检查和部分内网资源检查，不能据此认定所有发行版均可安装。
+**当前为适配开发版，已在一个 Po0 x86_64/BIOS 实例完成 Debian 12 的真实重装、首次启动、SSH 与 APT 更新验证。** 其他发行版和硬件路径尚未完成实机验证。具体执行路径与边界见 [实机测试记录](docs/live-test-2026-10-27.md)。
 
 ## Po0 上的变化
 
@@ -22,7 +22,7 @@
 
 | 路径 | 当前观察 |
 |---|---|
-| Debian 12 常规安装 | 基础源/security、amd64 netboot 内核和 initrd 可访问；实际 initrd 已确认支持本地 `file://` preseed |
+| Debian 12 常规安装 | 已完成真实重装、首次启动、公钥 SSH 和内网基础源/updates/security 更新验证 |
 | Debian 13 | Release 文件可访问；未进行完整安装 |
 | Alpine 3.24 | amd64 virt 内核、initramfs 和软件源可访问；未进行完整安装 |
 | AlmaLinux 9 | 默认 GenericCloud 云镜像可访问；未进行完整安装，不保证固定到 9.5 |
@@ -56,7 +56,7 @@ sudo bash reinstall.sh almalinux 9 --ssh-key /root/.ssh/authorized_keys
 
 保留上游的用户名、密码、公钥、SSH 端口、`--hold`、`reset`、云镜像和 DD 等入口。原始系统/版本列表及其他选项见 [上游用法备份](README.upstream.md)；其中单文件下载、Web 日志和公网镜像说明不适用于本分支。
 
-`--hold 1` 仍会准备引导，供后续进入安装环境检查，不是只读模式。当前这台开发样机尚未执行该步骤。
+`--hold 1` 仍会准备引导，供后续进入安装环境检查，不是只读模式。本轮已验证该模式下的安装器网络、SSH，以及重启回原系统。
 
 重启前可用以下命令取消已准备的重装：
 

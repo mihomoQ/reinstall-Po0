@@ -2,7 +2,7 @@
 
 A Po0-specific fork of [bin456789/reinstall](https://github.com/bin456789/reinstall), retaining multiple OS choices and the GPL-3.0 license. See the [Chinese guide](README.md) for configuration, observed resource availability, and limitations.
 
-This is an **unvalidated installation candidate**. Isolated tests and selected internal resource checks pass; no machine has been reinstalled or rebooted with this fork yet.
+This is a **development candidate with one live-tested path**: Debian 12 on a Po0 x86_64/BIOS VM has completed a full disk reinstall, first boot, public-key SSH login, and internal APT update. Other systems and hardware paths remain unvalidated. See the [live-test record](docs/live-test-2026-10-27.md).
 
 - No public geolocation or Internet-connectivity probes, and no address/route deletion based on them.
 - Private DHCP networking, original DNS fallback, and internal mirror mappings.

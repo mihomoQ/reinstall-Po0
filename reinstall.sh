@@ -10,7 +10,7 @@ set -eE
 confhome=file:///po0-assets
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
-SCRIPT_VERSION=PO0-20261027-2
+SCRIPT_VERSION=PO0-20261028-1
 
 # 记录要用到的 windows 程序，运行时输出删除 \r
 WINDOWS_EXES='cmd powershell wmic reg diskpart netsh bcdedit mountvol'
@@ -61,6 +61,8 @@ fi
 # shellcheck source=po0-lib.sh
 . "$PO0_ASSET_DIR/po0-lib.sh"
 po0_check_bundle || exit 1
+# shellcheck source=po0-cloud.sh
+. "$PO0_ASSET_DIR/po0-cloud.sh"
 trap 'trap_err $LINENO $?' ERR
 
 trap_err() {
@@ -379,6 +381,70 @@ insert_into_file() {
     sed -i "${line_num}r /dev/stdin" "$file"
 }
 
+po0_need_curl() {
+    is_have_cmd curl || install_pkg curl >&2
+}
+
+po0_need_rsync() {
+    is_have_cmd rsync || install_pkg rsync >&2
+}
+
+po0_prepare_cloud_image() {
+    local requested=$1 selected
+    selected=$(po0_cloud_resolve "$requested") || {
+        error_and_exit "No accessible internal or rsync cloud image: $requested"
+        return 1
+    }
+    finalos_img=$selected
+    case "$selected" in
+    rsync://*)
+        po0_cloud_cache=$(po0_cloud_stage "$selected" "$tmp/po0-cloud" "$tmp/po0-cloud-image.meta") || {
+            error_and_exit "Could not stage the rsync cloud image before changing boot files."
+            return 1
+        }
+        # A listed mirror can fail during the actual transfer; the stage helper
+        # records the source that supplied the complete, verified file.
+        finalos_img=$(po0_cloud_meta_get url "$tmp/po0-cloud-image.meta") || return
+        ;;
+    *)
+        po0_cloud_cache=
+        rm -f "$tmp/po0-cloud-image.meta"
+        ;;
+    esac
+}
+
+po0_finish_cloud_metadata() {
+    case "$finalos_img" in rsync://*) ;; *) return 0 ;; esac
+    local kind="$finalos_img_type${finalos_img_type_warp:+.$finalos_img_type_warp}" expanded
+    case "$kind" in
+    qemu)
+        expanded=$(po0_cloud_meta_get size "$tmp/po0-cloud-image.meta") || return
+        ;;
+    qemu.gzip|qemu.xz|qemu.zstd)
+        install_pkg "$finalos_img_type_warp" >&2
+        # Count the real expanded file, not a guessed ratio. pipefail prevents
+        # a corrupt/truncated archive from becoming trusted install metadata.
+        if ! expanded=$(
+            set -o pipefail
+            "$finalos_img_type_warp" -dc "$po0_cloud_cache" | wc -c
+        ); then
+            error_and_exit "The staged cloud image could not be completely decompressed."
+            return 1
+        fi
+        expanded=${expanded//[[:space:]]/}
+        ;;
+    *)
+        error_and_exit "Rsync fallback supports QCOW2 cloud images, not $kind."
+        return 1
+        ;;
+    esac
+    if ! [[ "$expanded" =~ ^[1-9][0-9]*$ ]]; then
+        error_and_exit 'Invalid expanded cloud-image size.'
+        return 1
+    fi
+    printf 'type=%s\nexpanded_size=%s\n' "$kind" "$expanded" >>"$tmp/po0-cloud-image.meta"
+}
+
 test_url() {
     test_url_real false "$@"
 }
@@ -401,48 +467,60 @@ test_url_real() {
 
     tmp_file=$tmp/img-test
 
-    # TODO: 好像无法识别 nixos 官方源的跳转
-    # 有的服务器不支持 range，curl会下载整个文件
-    # 所以用 head 限制 1M
-    # 过滤 curl 23 错误（head 限制了大小）
-    # 也可用 ulimit -f 但好像 cygwin 不支持
-    # ${PIPESTATUS[n]} 表示第n个管道的返回值
-    echo $url
-    for i in $(seq 5 -1 0); do
-        if command curl --insecure --connect-timeout 10 -Lfr 0-1048575 "$url" \
-            1> >(exec head -c 1048576 >$tmp_file) \
-            2> >(exec grep -v 'curl: (23)' >&2); then
-            break
-        else
-            ret=$?
-            msg="$url not accessible"
-            case $ret in
-            22)
-                # 403 404
-                # 这里的 failed 虽然返回 1，但是不会中断脚本，因此要手动 return
-                failed "$msg"
-                return "$ret"
-                ;;
-            23)
-                # 限制了空间
+    if [[ "$url" = rsync://* ]]; then
+        # file_enhanced may unpack/overwrite its input. Inspect a header copy,
+        # never the retained full image used for its SHA256 and expanded size.
+        if [ -z "${po0_cloud_cache:-}" ] || [ ! -s "$po0_cloud_cache" ] ||
+            [ "$(po0_cloud_meta_get url "$tmp/po0-cloud-image.meta")" != "$url" ]; then
+            failed 'Rsync image must be staged by the cloud-image preparation path.'
+            return 1
+        fi
+        head -c 1048576 "$po0_cloud_cache" >"$tmp_file" || return
+    else
+
+        # TODO: 好像无法识别 nixos 官方源的跳转
+        # 有的服务器不支持 range，curl会下载整个文件
+        # 所以用 head 限制 1M
+        # 过滤 curl 23 错误（head 限制了大小）
+        # 也可用 ulimit -f 但好像 cygwin 不支持
+        # ${PIPESTATUS[n]} 表示第n个管道的返回值
+        echo $url
+        for i in $(seq 5 -1 0); do
+            if command curl --insecure --connect-timeout 10 -Lfr 0-1048575 "$url" \
+                1> >(exec head -c 1048576 >$tmp_file) \
+                2> >(exec grep -v 'curl: (23)' >&2); then
                 break
-                ;;
-            *)
-                # 其他错误
-                if [ $i -eq 0 ]; then
+            else
+                ret=$?
+                msg="$url not accessible"
+                case $ret in
+                22)
+                    # 403 404
+                    # 这里的 failed 虽然返回 1，但是不会中断脚本，因此要手动 return
                     failed "$msg"
                     return "$ret"
-                fi
-                ;;
-            esac
-            sleep 1
-        fi
-    done
+                    ;;
+                23)
+                    # 限制了空间
+                    break
+                    ;;
+                *)
+                    # 其他错误
+                    if [ $i -eq 0 ]; then
+                        failed "$msg"
+                        return "$ret"
+                    fi
+                    ;;
+                esac
+                sleep 1
+            fi
+        done
+    fi
 
     # 如果要检查文件类型
     if [ -n "$expect_types" ]; then
         install_pkg file
-        real_type=$(file_enhanced $tmp_file)
+        real_type=$(file_enhanced "$tmp_file")
         echo "File type: $real_type"
 
         # debian 9 ubuntu 16.04-20.04 可能会将 iso 识别成 raw
@@ -520,16 +598,16 @@ file_enhanced() {
 
     full_type=
     while true; do
-        type="$(file -b $file | fix_file_type)"
+        type="$(file -b "$file" | fix_file_type)"
         full_type="$type.$full_type"
         case "$type" in
         xz | gzip | zstd)
-            install_pkg "$type"
+            install_pkg "$type" >&2
             $type -dc <"$file" | head -c 1048576 >"$file.inside"
             mv -f "$file.inside" "$file"
             ;;
         tar)
-            install_pkg "$type"
+            install_pkg "$type" >&2
             # 隐藏 gzip: unexpected end of file 提醒
             tar xf "$file" -O 2>/dev/null | head -c 1048576 >"$file.inside"
             mv -f "$file.inside" "$file"
@@ -1778,10 +1856,10 @@ Continue?
             if [ -z "$img" ]; then
                 # 使用 systemd 且没有 cloud-init
                 prefix=di-$basearch_alt-console
-                filename=$(curl -L $mirror/$dir/latest-$prefix.txt | grep '.qcow2' | awk '{print $1}' | grep .)
+                filename=$(po0_cloud_text "$mirror/$dir/latest-$prefix.txt" | grep '.qcow2' | awk '{print $1}' | grep .)
                 img=$mirror/$dir/$filename
             fi
-            test_url "$img" 'qemu'
+            # The common finalos path resolves/stages and checks cloud images.
         else
             if [ -z "$img" ]; then
                 prefix=stage3-$basearch_alt-systemd
@@ -2091,7 +2169,7 @@ Continue with DD?
                     # 不加 / 会跳转到 https://dl.fedoraproject.org，纯 ipv6 无法访问
                     # curl -L -6 https://d2lzkl7pfhq30w.cloudfront.net/pub/fedora/linux/releases/42/Cloud/x86_64/images
                     # curl -L -6 https://d2lzkl7pfhq30w.cloudfront.net/pub/fedora/linux/releases/42/Cloud/x86_64/images/
-                    filename=$(curl -L $ci_mirror/ | grep -oP "Fedora-Cloud-Base-Generic.*?.qcow2" |
+                    filename=$(po0_cloud_text "$ci_mirror/" | grep -oP "Fedora-Cloud-Base-Generic.*?.qcow2" |
                         sort -uV | tail -1 | grep .)
                     img=$ci_mirror/$filename
                     ;;
@@ -2146,7 +2224,7 @@ Continue with DD?
                 [ "$basearch" = aarch64 ] &&
                     template_prefix=ol${releasever}_${basearch}-cloud ||
                     template_prefix=ol${releasever}
-                curl -Lo $tmp/oracle.json $mirror/templates/OracleLinux/$template_prefix-template.json
+                po0_cloud_text "$mirror/templates/OracleLinux/$template_prefix-template.json" >"$tmp/oracle.json"
                 dir=$(jq -r .base_url $tmp/oracle.json)
                 file=$(jq -r .kvm.image $tmp/oracle.json)
                 img=$mirror$dir/$file
@@ -2190,7 +2268,7 @@ Continue with DD?
                     dir=$releasever/images/$basearch
                 fi
 
-                file=$(curl -L $mirror/$dir/ | grep -oP 'OpenCloudOS.*?\.qcow2' |
+                file=$(po0_cloud_text "$mirror/$dir/" | grep -oP 'OpenCloudOS.*?\.qcow2' |
                     sort -uV | tail -1 | grep .)
                 img=$mirror/$dir/$file
             fi
@@ -2209,7 +2287,7 @@ Continue with DD?
                 [ "$releasever" -ge 23 ] &&
                     filename='AnolisOS.*?\.qcow2' ||
                     filename='AnolisOS.*?-ANCK\.qcow2'
-                file=$(curl -L $mirror/$dir/ | grep -oP "$filename" |
+                file=$(po0_cloud_text "$mirror/$dir/" | grep -oP "$filename" |
                     sort -uV | tail -1 | grep .)
                 img=$mirror/$dir/$file
             fi
@@ -2228,7 +2306,7 @@ Continue with DD?
         if is_use_cloud_image; then
             # ci
             if [ -z "$img" ]; then
-                name=$(curl -L "$mirror/" | grep -oE "openEuler-$releasever(-LTS)?(-SP[0-9])?" |
+                name=$(po0_cloud_text "$mirror/" | grep -oE "openEuler-$releasever(-LTS)?(-SP[0-9])?" |
                     sort -uV | tail -1 | grep .)
                 img=$mirror/$name/virtual_machine_img/$basearch/$name-$basearch.qcow2.xz
             fi
@@ -2253,8 +2331,10 @@ Continue with DD?
 
     # 集中测试云镜像格式
     if is_use_cloud_image && [ "$step" = finalos ]; then
+        po0_prepare_cloud_image "$finalos_img"
         # shellcheck disable=SC2154
-        test_url $finalos_img 'qemu qemu.gzip qemu.xz qemu.zstd raw.xz' finalos_img_type
+        test_url "$finalos_img" 'qemu qemu.gzip qemu.xz qemu.zstd raw.xz' finalos_img_type
+        po0_finish_cloud_metadata
     fi
 }
 
@@ -4461,6 +4541,9 @@ po0_embed_assets() {
     if [ -f "$PO0_ASSET_DIR/po0-mirrors.conf" ]; then
         cp "$PO0_ASSET_DIR/po0-mirrors.conf" "$root/po0-assets/po0-mirrors.conf"
     fi
+    if [ -n "${tmp:-}" ] && [ -s "$tmp/po0-cloud-image.meta" ]; then
+        cp "$tmp/po0-cloud-image.meta" "$root/configs/po0-cloud-image.meta"
+    fi
     if [ -r /run/systemd/resolve/resolv.conf ]; then
         cp /run/systemd/resolve/resolv.conf "$root/configs/po0-resolv.conf"
     elif [ -r /etc/resolv.conf ]; then
@@ -5295,6 +5378,12 @@ done
 
 # 检查必须的参数
 verify_os_args
+
+# Raw DD writes a stream directly to the disk; it does not use the cloud-image
+# staging and verification path. Reject this combination before boot changes.
+if [ "$distro" = dd ] && [[ "$img" = rsync://* ]]; then
+    error_and_exit 'Rsync URLs are supported for cloud-image installation, not raw DD.'
+fi
 
 # Legacy ISO installers need a different asset transport than the default
 # cloud-image paths. Do not schedule a boot into a known incomplete setup.

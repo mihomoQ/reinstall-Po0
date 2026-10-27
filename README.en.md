@@ -6,6 +6,7 @@ This is a **development candidate with one live-tested path**: Debian 12 on a Po
 
 - No public geolocation or Internet-connectivity probes, and no address/route deletion based on them.
 - Private DHCP networking, original DNS fallback, and internal mirror mappings.
+- Package repositories stay internal. QCOW2 cloud images prefer the internal mirror, then use bounded rsync failover through bundled campus endpoints. MirrorZ's HTTP 302 service is not a runtime dependency or a rsync redirector.
 - Chrony with Tencent's five internal time servers on integrated Debian/Kali, Ubuntu/RPM cloud-image and Alpine paths. The same configuration helper has been live-tested on the installed Debian 12 server; other chrony integrations are isolated-test coverage only.
 - SSH/screen installation logs only; no Web log service or Web port options.
 - Version-matched local helpers and Debian preseed embedded into initrd. Transfer the complete source directory or bundle, not a single script.
@@ -19,6 +20,6 @@ python3 tools/build-bundle.py
 
 Transfer `dist/reinstall-Po0.tar.gz` to the server using SCP/SFTP and extract it. The bundle contains checksums and excludes private operator configuration. Follow README.md before preparing any installation; installation erases the selected disk after reboot.
 
-Observed internal resources include Debian 12 netboot, Alpine 3.24 netboot, and AlmaLinux 9 GenericCloud. Ubuntu cloud-image and Debian cdimage default paths return 404; use an accessible `--img` URL or a custom prefix mapping. Legacy `--installer` paths stop before boot changes until their second-stage configuration transport is adapted. Windows source bootstrap and optional third-party resources remain unverified.
+Observed internal resources include Debian 12 netboot, Alpine 3.24 netboot, and AlmaLinux 9 GenericCloud. Missing Ubuntu/Debian/Rocky cloud-image files can fall back to rsync. A complete Ubuntu 24.04 image has been downloaded and type/hash-checked on the test VM; the new cloud-image installation path has not completed a full reinstall yet. Rsync images are staged before reboot and downloaded again in the installer; only metadata is embedded. Hash comparison pins the bytes across stages, not publisher identity. Legacy `--installer` paths stop before boot changes until their second-stage configuration transport is adapted. Windows source bootstrap and optional third-party resources remain unverified.
 
 Source baseline: `01e1e259968c3b9c5ee5d6aea7253392b5eafe92`. Original documentation is retained in `README.upstream.md` and `README.upstream.en.md` for reference; upstream Web logging and single-file download instructions do not apply here.

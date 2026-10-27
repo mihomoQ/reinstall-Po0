@@ -16,10 +16,16 @@ if ! [ -r "$PO0_ASSET_DIR/po0-lib.sh" ]; then
 fi
 # shellcheck source=po0-lib.sh
 . "$PO0_ASSET_DIR/po0-lib.sh"
+if ! [ -r "$PO0_ASSET_DIR/po0-cloud.sh" ]; then
+    printf '%s\n' "Missing Po0 bundle: $PO0_ASSET_DIR/po0-cloud.sh" >&2
+    exit 1
+fi
+# shellcheck source=po0-cloud.sh
+. "$PO0_ASSET_DIR/po0-cloud.sh"
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 # shellcheck disable=SC2034
-SCRIPT_VERSION=PO0-20261027-2
+SCRIPT_VERSION=PO0-20261028-1
 
 TRUE=0
 FALSE=1
@@ -2941,6 +2947,13 @@ xda() {
 }
 
 create_part() {
+    # Size/source checks for rsync must have completed before wipefs below.
+    case "${img:-}" in
+    rsync://*)
+        [ "${po0_cloud_prepared:-}" = "$img" ] ||
+            error_and_exit 'The rsync cloud image was not validated before partitioning.'
+        ;;
+    esac
     # 除了 dd 都会用到
     info "Create Part"
 
@@ -4871,6 +4884,123 @@ disable_kdump() {
     fi
 }
 
+po0_prepare_rsync_cloud() {
+    case "${img:-}" in rsync://*) ;; *) return 0 ;; esac
+    po0_cloud_prepared=
+    if ! is_use_cloud_image || [ "${img_type:-}" != qemu ]; then
+        error_and_exit 'Rsync is supported for QCOW cloud images only, not raw DD or ISO streaming.'
+        return 1
+    fi
+
+    local meta=${PO0_CLOUD_META_FILE:-/configs/po0-cloud-image.meta}
+    local saved_url saved_type saved_sha remote_size expected_type storage_bytes
+    local disk_bytes boot_mb minimum_bytes
+    [ -r "$meta" ] || {
+        error_and_exit 'Missing cloud image metadata from the host preparation stage.'
+        return 1
+    }
+    # Metadata is data, never executable shell input.
+    saved_url=$(po0_cloud_meta_get url "$meta") || return
+    saved_type=$(po0_cloud_meta_get type "$meta") || return
+    saved_sha=$(po0_cloud_meta_get sha256 "$meta") || return
+    po0_cloud_image_bytes=$(po0_cloud_meta_get size "$meta") || return
+    expected_type="qemu${img_type_warp:+.$img_type_warp}"
+    [ "$saved_url" = "$img" ] && [ "$saved_type" = "$expected_type" ] || {
+        error_and_exit 'Cloud image URL/type differs from the prepared metadata.'
+        return 1
+    }
+    case "$saved_sha" in ''|*[!0-9a-f]*)
+        error_and_exit 'Invalid cloud image SHA256 metadata.'; return 1 ;;
+    esac
+    [ "${#saved_sha}" -eq 64 ] || {
+        error_and_exit 'Invalid cloud image SHA256 length.'; return 1
+    }
+    case "$po0_cloud_image_bytes" in ''|*[!0-9]*)
+        error_and_exit 'Invalid cloud image size metadata.'; return 1 ;;
+    esac
+    [ "$po0_cloud_image_bytes" -gt 0 ] || {
+        error_and_exit 'Cloud image size must be positive.'; return 1
+    }
+
+    po0_cloud_expanded_bytes=$po0_cloud_image_bytes
+    if [ -n "${img_type_warp:-}" ]; then
+        case "$img_type_warp" in xz|gzip|zstd) ;; *)
+            error_and_exit 'Unsupported rsync cloud image compression.'; return 1 ;;
+        esac
+        po0_cloud_expanded_bytes=$(po0_cloud_meta_get expanded_size "$meta") || return
+        case "$po0_cloud_expanded_bytes" in ''|*[!0-9]*)
+            error_and_exit 'Invalid expanded cloud image size metadata.'; return 1 ;;
+        esac
+        [ "$po0_cloud_expanded_bytes" -gt 0 ] || {
+            error_and_exit 'Expanded cloud image size must be positive.'; return 1
+        }
+    fi
+
+    storage_bytes=$po0_cloud_image_bytes
+    if [ -n "${img_type_warp:-}" ]; then
+        storage_bytes=$((storage_bytes + po0_cloud_expanded_bytes))
+        [ "$storage_bytes" -gt "$po0_cloud_image_bytes" ] &&
+            [ "$storage_bytes" -gt "$po0_cloud_expanded_bytes" ] || {
+            error_and_exit 'Cloud image storage size overflow.'; return 1
+        }
+    fi
+    po0_cloud_installer_mb=$(get_part_size_mb_for_file_size_b "$storage_bytes") || return
+    disk_bytes=$(get_disk_size "/dev/$xda") || return
+    case "$disk_bytes" in ''|*[!0-9]*)
+        error_and_exit 'Cannot determine target disk size before rsync installation.'; return 1 ;;
+    esac
+    if is_efi; then boot_mb=101; else boot_mb=2; fi
+    # This is only a hard lower bound, not a guarantee that a distro's files
+    # fit. Reject impossible staging layouts before wipefs erases the disk.
+    minimum_bytes=$(((po0_cloud_installer_mb + boot_mb + 1024) * 1024 * 1024))
+    [ "$minimum_bytes" -gt "$storage_bytes" ] || {
+        error_and_exit 'Cloud image partition reservation overflow.'; return 1
+    }
+    [ "$disk_bytes" -ge "$minimum_bytes" ] || {
+        error_and_exit 'Not enough disk space for the staged image, boot area and at least 1 GiB of OS space.'
+        return 1
+    }
+
+    # APK remains on the internal package repository. Only the image uses rsync.
+    apk add rsync || return
+    remote_size=$(po0_cloud_rsync_size "$img") || return
+    [ "$remote_size" = "$po0_cloud_image_bytes" ] || {
+        error_and_exit 'The rsync cloud image changed size after host preparation.'
+        return 1
+    }
+    po0_cloud_prepared=$img
+}
+
+po0_download_rsync_qcow() {
+    local target=$1 meta=${PO0_CLOUD_META_FILE:-/configs/po0-cloud-image.meta}
+    local compressed expanded_actual
+    [ "${po0_cloud_prepared:-}" = "$img" ] || {
+        error_and_exit 'Rsync cloud image was not prepared.'; return 1
+    }
+    if [ -n "${img_type_warp:-}" ]; then
+        compressed=$target.rsync-compressed
+        po0_cloud_fetch "$img" "$compressed" || return
+        po0_cloud_verify "$compressed" "$meta" || return
+        if ! (
+            set -o pipefail
+            pipe_extract <"$compressed" >"$target"
+        ); then
+            error_and_exit 'Failed to unpack the verified rsync cloud image.'
+            return 1
+        fi
+        expanded_actual=$(wc -c <"$target" | tr -d '[:space:]')
+        [ "$expanded_actual" = "$po0_cloud_expanded_bytes" ] || {
+            error_and_exit 'Expanded cloud image size differs from host preparation.'
+            return 1
+        }
+        rm -f "$compressed"
+    else
+        po0_cloud_fetch "$img" "$target" || return
+        po0_cloud_verify "$target" "$meta" || return
+    fi
+    qemu-img info "$target" >/dev/null || return
+}
+
 download_qcow() {
     apk add qemu-img
     info "Download qcow2 image"
@@ -4879,7 +5009,9 @@ download_qcow() {
     mount /dev/disk/by-label/installer /installer
 
     qcow_file=/installer/cloud_image.qcow2
-    if [ -n "$img_type_warp" ]; then
+    if [[ "$img" = rsync://* ]]; then
+        po0_download_rsync_qcow "$qcow_file"
+    elif [ -n "$img_type_warp" ]; then
         # 边下载边解压，单线程下载
         # 用官方 wget ，带进度条
         apk add wget
@@ -4946,6 +5078,17 @@ get_part_size_mb_for_file_size_b() {
 }
 
 get_cloud_image_part_size() {
+    case "${img:-}" in
+    rsync://*)
+        [ "${po0_cloud_prepared:-}" = "$img" ] || {
+            error_and_exit 'Rsync image sizing requires validated preparation metadata.'
+            return 1
+        }
+        # Prepared size includes both compressed and expanded files when needed.
+        echo "${po0_cloud_installer_mb}MiB"
+        return
+        ;;
+    esac
     # 7
     # https://cloud.centos.org/centos/7/images/CentOS-7-x86_64-GenericCloud-2211.qcow2c 400m
 
@@ -8772,6 +8915,9 @@ trans() {
         distro=any
         cloud_image=1
     fi
+
+    # Reject stale/missing rsync metadata before create_part can erase the disk.
+    po0_prepare_rsync_cloud || return
 
     if is_use_cloud_image; then
         case "$img_type" in

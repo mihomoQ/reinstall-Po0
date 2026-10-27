@@ -6,6 +6,7 @@ scratch=$(mktemp -d)
 trap 'rm -rf -- "$scratch"' EXIT
 mkdir -p "$scratch/assets" "$scratch/target root/etc" "$scratch/target root/usr/bin"
 cp "$repo/po0-lib.sh" "$scratch/assets/po0-lib.sh"
+cp "$repo/po0-cloud.sh" "$scratch/assets/po0-cloud.sh"
 cat >"$scratch/assets/po0-chrony.sh" <<'EOF'
 #!/bin/sh
 printf 'configure:%s\n' "$1" >>"$TEST_LOG"

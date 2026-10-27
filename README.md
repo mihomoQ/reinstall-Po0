@@ -10,6 +10,7 @@
 - 安装环境按 MAC 找到网卡并请求 DHCP，保留获得的内网地址、网关、DNS；公网映射地址不写入网卡。
 - DHCP 超时时可在安装环境临时使用原网络配置，目标系统仍配置为 DHCP。原系统实际 DNS 随安装文件保存，不使用公共 DNS 回退。
 - 默认镜像为 `http://mirrors.tencentyun.com`；下载和目标系统的软件源接入统一 URL 映射，Debian security 单独处理。
+- 软件包源继续使用内网；QCOW2 云镜像优先内网，缺失或不可访问时依次尝试南大、中科大、清华的 rsync 873，Ubuntu 另有官方 rsync 候选。目录/索引发现也使用云镜像专用回退，软件包下载不会切换到校园源。
 - Debian/Kali 安装器及已接入的 Debian/Ubuntu/RPM 云镜像、Alpine 路径安装 chrony，使用 `time1` 至 `time5.tencentyun.com`，并启用开机启动。禁用 chrony 的默认公网池和 DHCP/包含文件引入的时间源；保留发行版自带的状态、日志和权限配置。
 - 安装过程只提供 SSH/screen 日志，删除 Web 日志服务、页面、`--web-port` / `--http-port` 及其专用依赖。
 - 使用完整本地 bundle。辅助脚本、Debian preseed 和配置随 initrd 携带，经过 Alpine `switch_root` 后仍保留，不从上游 GitHub/CNB 拉取另一版本脚本。
@@ -35,11 +36,24 @@ chrony 的五个内网时间域名与 [腾讯官方配置](https://cloud.tencent
 | Debian 13 | Release 文件可访问；未进行完整安装 |
 | Alpine 3.24 | amd64 virt 内核、initramfs 和软件源可访问；未进行完整安装 |
 | AlmaLinux 9 | 默认 GenericCloud 云镜像可访问；未进行完整安装，不保证固定到 9.5 |
-| Ubuntu 22.04 / 24.04 | 软件源可访问，默认 `ubuntu-cloud-images` 路径为 404；需要 `--img` 或镜像映射 |
-| Debian `--ci` | 默认 `debian-cdimage` 路径为 404；需要 `--img` 或镜像映射 |
+| Ubuntu 22.04 / 24.04 | 软件源可访问，内网云镜像路径 404 后可自动选 rsync；24.04 已完整下载并验证类型/哈希 |
+| Debian `--ci` | 内网 `debian-cdimage` 路径 404 后可自动选 rsync；已验证 Debian 12 对应文件可列出 |
+| Rocky 9 | 内网默认 GenericCloud 文件缺失，已验证可自动选到南大 rsync 对应文件 |
 | 其他上游发行版 | 保留入口，需要逐一验证镜像、软件源及安装流程 |
 
-不能简单把“国内镜像”视为“Po0 可达镜像”。未匹配的用户 URL 会原样使用；不存在的内网资源会报错，不会自动退回已知不可达的公网镜像。
+未匹配的用户 URL 会原样使用。自动回退只适用于云镜像，使用 rsync 873，不退回已知不可达的公网 HTTP/HTTPS。
+
+## 云镜像与自动选源
+
+[MirrorZ／教育网联合镜像站](https://mirrors.cernet.edu.cn/) 的自动分流是 HTTP 302，不能作为 rsync 地址或 rsync 重定向器。Po0 安装过程不依赖其 80/443 接口；候选 rsync 端点随 bundle 保存，按实际目标文件可用性有界切换。这是可用源故障切换，不保证测出实时最快的站点，也不对镜像站做额外测速。
+
+rsync 没有 HTTP Range 接口。为保留重启前的真实文件类型检查，rsync 回退会在原系统完整暂存镜像，记录来源、大小、SHA256、格式和解压后大小；initrd 只携带这些小元数据。安装环境会再下载一次，并在使用镜像前比较内容。**目前 rsync 路径会下载两次镜像**，需要原系统有足够暂存空间；内网 HTTP 路径仍按原流程处理。
+
+安装阶段在清盘前检查元数据、远端大小及暂存分区空间；完整 SHA256 比较发生在重新分区后的下载阶段。因此可以拒绝变化的文件，但不能保证所有下载失败都发生在清盘前。这个哈希用于固定两阶段内容，不等同于验证发行方签名。
+
+支持普通 QCOW2 及 gzip/xz/zstd 包装的 QCOW2。压缩路径预留压缩文件与解压文件的空间。原始 DD/ISO 的 rsync 流式安装不在此次接入范围内，会明确拒绝；原有 HTTP 路径保留。
+
+2026-10-28 实测：AlmaLinux 9 选择内网；Ubuntu 24.04 自动选到南大 rsync，下载 621,284,352 字节约 12 秒，真实类型识别为 QCOW2，哈希与此前取得的官方校验文件一致。Ubuntu 22.04、Rocky 9、Debian 12 云镜像也成功解析到可用 rsync 文件。本轮没有再次执行云镜像整机安装。
 
 ## 获取完整文件
 
@@ -79,7 +93,7 @@ sudo bash reinstall.sh reset
 
 主镜像需要变化时，复制 `po0.conf.example` 为 `po0.conf`。`PO0_MIRROR_BASE` 只能是 HTTP 协议、主机和可选端口，不包含仓库路径；Debian 安装器的软件源路径使用 HTTP，因此此项不接受 HTTPS-only 源。单独的镜像 URL 和下方前缀映射可以使用 HTTPS。
 
-单独覆盖缺失的云镜像目录时，复制 `po0-mirrors.conf.example` 为 `po0-mirrors.conf`，每行两个 URL 前缀，以空格或制表符分隔，第一条匹配生效。例如将完整的 Ubuntu 云镜像目录放在你控制、且 Po0 能访问的服务上：
+需要覆盖默认云镜像位置时，可复制 `po0-mirrors.conf.example` 为 `po0-mirrors.conf`，每行两个 HTTP(S) URL 前缀，以空格或制表符分隔，第一条匹配生效。例如使用你控制、且 Po0 能访问的服务：
 
 ```text
 https://mirror.nju.edu.cn/ubuntu-cloud-images/ http://YOUR-MIRROR:8080/ubuntu-cloud-images/
@@ -92,6 +106,8 @@ https://mirror.nju.edu.cn/ubuntu-cloud-images/ http://YOUR-MIRROR:8080/ubuntu-cl
 ```sh
 sudo bash reinstall.sh ubuntu 24.04 --img 'http://YOUR-MIRROR:PORT/ubuntu-24.04-server-cloudimg-amd64.img' --ssh-key /root/.ssh/authorized_keys
 ```
+
+QCOW2 云镜像也可显式指定 `--img rsync://HOST/MODULE/path/image.qcow2`；软件包源仍使用内网。
 
 `po0.conf` 是操作员提供的 shell 配置，应只使用自己信任的内容。两个本地配置文件都被 Git 忽略；实际镜像设置会随本次 initrd 保存。
 
@@ -112,10 +128,13 @@ sh tests/test-network.sh
 bash tests/test-trans.sh
 sh tests/test-chrony.sh
 bash tests/test-trans-chrony.sh
+sh tests/test-cloud-transport.sh
+bash tests/test-trans-cloud.sh
 bash -n reinstall.sh
 busybox ash -n trans.sh
 busybox ash -n initrd-network.sh
 busybox ash -n po0-chrony.sh
+busybox ash -n po0-cloud.sh
 ```
 
 测试使用临时文件和模拟网卡命令，不运行重装入口，不修改真实网络或引导。CI 也只执行这些测试和打包检查。

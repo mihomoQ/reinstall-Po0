@@ -4,8 +4,8 @@ setlocal EnableDelayedExpansion
 
 set mirror=http://mirrors.tencentyun.com
 
-set pkgs=curl,cpio,p7zip,dos2unix,jq,xz,gzip,zstd,openssl,bind-utils,libiconv,binutils
-set cmds=curl,cpio,p7zip,dos2unix,jq,xz,gzip,zstd,openssl,nslookup,iconv,ar
+set pkgs=curl,rsync,cpio,p7zip,dos2unix,jq,xz,gzip,zstd,openssl,bind-utils,libiconv,binutils
+set cmds=curl,rsync,cpio,p7zip,dos2unix,jq,xz,gzip,zstd,openssl,nslookup,iconv,ar
 
 rem 65001 代码页会乱码
 

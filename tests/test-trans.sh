@@ -5,6 +5,7 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 scratch=$(mktemp -d)
 trap 'rm -rf -- "$scratch"' EXIT
 mkdir -p "$scratch/assets" "$scratch/bin" "$scratch/root/etc/apt/sources.list.d" "$scratch/root/etc/yum.repos.d"
+cp "$repo/po0-cloud.sh" "$scratch/assets/po0-cloud.sh"
 
 cat >"$scratch/assets/po0-lib.sh" <<'EOF'
 PO0_MIRROR_BASE=http://mirror.test

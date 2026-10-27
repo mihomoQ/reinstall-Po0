@@ -15,6 +15,7 @@ get-xda.sh
 initrd-network.sh
 po0-assets.list
 po0-chrony.sh
+po0-cloud.sh
 po0-lib.sh
 reinstall.bat
 reinstall.sh

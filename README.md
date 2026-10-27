@@ -10,11 +10,20 @@
 - 安装环境按 MAC 找到网卡并请求 DHCP，保留获得的内网地址、网关、DNS；公网映射地址不写入网卡。
 - DHCP 超时时可在安装环境临时使用原网络配置，目标系统仍配置为 DHCP。原系统实际 DNS 随安装文件保存，不使用公共 DNS 回退。
 - 默认镜像为 `http://mirrors.tencentyun.com`；下载和目标系统的软件源接入统一 URL 映射，Debian security 单独处理。
+- Debian/Kali 安装器及已接入的 Debian/Ubuntu/RPM 云镜像、Alpine 路径安装 chrony，使用 `time1` 至 `time5.tencentyun.com`，并启用开机启动。禁用 chrony 的默认公网池和 DHCP/包含文件引入的时间源；保留发行版自带的状态、日志和权限配置。
 - 安装过程只提供 SSH/screen 日志，删除 Web 日志服务、页面、`--web-port` / `--http-port` 及其专用依赖。
 - 使用完整本地 bundle。辅助脚本、Debian preseed 和配置随 initrd 携带，经过 Alpine `switch_root` 后仍保留，不从上游 GitHub/CNB 拉取另一版本脚本。
 - Linux 内核、initrd、辅助文件及 Linux EFI GRUB 下载/打包成功后才替换现有重装引导文件。保留磁盘识别、引导模式、架构和格式检查。
 
 这不是原 Po0 面板镜像的复制工具，不会把厂商旧 Python、全部调优参数或某台实例的 IP/MAC 固定写入新系统。
+
+## DNS、时间与厂商调优
+
+DNS 优先使用 DHCP 提供的地址。本机实测仍为腾讯 VPC DNS `183.60.83.19`、`183.60.82.98`；保存原 DNS 只用于安装环境未获得有效 DNS 时回退，不强行把每台机器写成固定地址。参见 [腾讯内网服务文档](https://cloud.tencent.com/document/product/213/5225)。
+
+chrony 的五个内网时间域名与 [腾讯官方配置](https://cloud.tencent.com/document/product/213/30393) 一致。Debian 12 已使用同一配置 helper 实测安装、服务启动、五个内网源响应及 `NTPSynchronized=yes`。此增补没有再次清盘重装；其他接入路径目前通过隔离测试，尚未实机验证。
+
+原镜像强制 `eth0` 只是命名约定，当前通过 MAC 识别并修正网络配置；安装后叫 `ens5` 也正常。串口控制台用于查看启动/故障日志。CPU C-state、调频以及 IRQ/RPS/XPS 属于性能调优，本分支未照搬其整套脚本，需压测确定收益。Tencent 磁盘 `max_sectors_kb=512` 规则继续保留，这表示单次 I/O 请求上限约 512 KiB，并非带宽限速。
 
 ## 安装资源状态
 
@@ -101,9 +110,12 @@ sudo bash reinstall.sh ubuntu 24.04 --img 'http://YOUR-MIRROR:PORT/ubuntu-24.04-
 python3 -m unittest discover -s tests -p 'test*.py' -v
 sh tests/test-network.sh
 bash tests/test-trans.sh
+sh tests/test-chrony.sh
+bash tests/test-trans-chrony.sh
 bash -n reinstall.sh
 busybox ash -n trans.sh
 busybox ash -n initrd-network.sh
+busybox ash -n po0-chrony.sh
 ```
 
 测试使用临时文件和模拟网卡命令，不运行重装入口，不修改真实网络或引导。CI 也只执行这些测试和打包检查。

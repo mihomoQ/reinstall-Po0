@@ -20,12 +20,15 @@ jobs:
           bash -n reinstall.sh
           busybox ash -n trans.sh
           busybox ash -n initrd-network.sh
+          busybox ash -n po0-chrony.sh
           sh -n po0-lib.sh
       - name: Run isolated tests
         run: |
           python3 -m unittest discover -s tests -p 'test*.py' -v
           busybox ash tests/test-network.sh
           bash tests/test-trans.sh
+          sh tests/test-chrony.sh
+          bash tests/test-trans-chrony.sh
       - name: Build and verify the portable bundle
         run: |
           python3 tools/build-bundle.py

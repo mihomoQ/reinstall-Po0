@@ -6,6 +6,7 @@ This is a **development candidate with one live-tested path**: Debian 12 on a Po
 
 - No public geolocation or Internet-connectivity probes, and no address/route deletion based on them.
 - Private DHCP networking, original DNS fallback, and internal mirror mappings.
+- Chrony with Tencent's five internal time servers on integrated Debian/Kali, Ubuntu/RPM cloud-image and Alpine paths. The same configuration helper has been live-tested on the installed Debian 12 server; other chrony integrations are isolated-test coverage only.
 - SSH/screen installation logs only; no Web log service or Web port options.
 - Version-matched local helpers and Debian preseed embedded into initrd. Transfer the complete source directory or bundle, not a single script.
 - Debian/Ubuntu APT (including security) and mapped RPM repositories are adapted. OS menu retention is not a claim that every resource or installation path works.

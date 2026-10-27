@@ -19,7 +19,7 @@ fi
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 # shellcheck disable=SC2034
-SCRIPT_VERSION=PO0-20261027-1
+SCRIPT_VERSION=PO0-20261027-2
 
 TRUE=0
 FALSE=1
@@ -1674,9 +1674,8 @@ install_alpine() {
     # 安装其他部件
     chroot /os setup-keymap us us
     chroot /os setup-timezone -i Asia/Shanghai
-    # 3.21 默认是 chrony
-    # 3.22 默认是 busybox ntp
-    printf '\n' | chroot /os setup-ntp || true
+    # Use the same internal chrony sources across supported Alpine versions.
+    po0_install_chrony /os
 
     # 设置公钥
     add_user_if_need /os
@@ -3962,6 +3961,7 @@ EOF
             chroot $os_dir $mgr install -y $fw_pkgs
         fi
 
+        po0_install_chrony "$os_dir"
         restore_resolv_conf $os_dir
     fi
 
@@ -4074,6 +4074,8 @@ EOF
             rm -rf $os_dir/etc/ssh/sshd_config
             UCF_FORCE_CONFFMISS=1 chroot $os_dir dpkg-reconfigure openssh-server
         fi
+
+        po0_install_chrony "$os_dir"
 
         # 镜像自带的网络管理器
         # debian 11 ifupdown
@@ -5041,6 +5043,32 @@ po0_rewrite_target_repos() {
     done
 }
 
+po0_install_chrony() {
+    local os_dir=$1
+    [ -n "$os_dir" ] || error_and_exit 'Missing chrony target root.'
+    [ -r "$PO0_ASSET_DIR/po0-chrony.sh" ] ||
+        error_and_exit 'Missing Po0 bundle: po0-chrony.sh'
+
+    # Package installation happens while target DNS and pseudo filesystems are
+    # available. Normal package-manager resolution handles time-daemon conflicts.
+    po0_rewrite_target_repos "$os_dir" || return
+    if [ -f "$os_dir/etc/alpine-release" ]; then
+        chroot "$os_dir" apk add chrony || return
+    elif [ -f "$os_dir/etc/debian_version" ]; then
+        chroot_apt_install "$os_dir" chrony || return
+    elif is_have_cmd_on_disk "$os_dir" dnf; then
+        chroot "$os_dir" dnf -y install chrony || return
+    elif is_have_cmd_on_disk "$os_dir" yum; then
+        chroot "$os_dir" yum -y install chrony || return
+    else
+        error_and_exit "No chrony package integration for $os_dir."
+    fi
+
+    # This helper changes the installed configuration and enables its service;
+    # it does not start a daemon inside the installation chroot.
+    sh "$PO0_ASSET_DIR/po0-chrony.sh" "$os_dir"
+}
+
 chroot_dnf() {
     po0_rewrite_target_repos /os
     if is_have_cmd_on_disk /os/ dnf; then
@@ -5407,6 +5435,8 @@ install_qcow_by_copy() {
             chroot_dnf install $fw_pkgs
         fi
 
+        po0_install_chrony "$os_dir"
+
         # fstab 删除多余分区
         # almalinux/rocky 镜像有 boot 分区
         # oracle 镜像有 swap 分区
@@ -5718,6 +5748,8 @@ EOF
         if fw_pkgs=$(get_ucode_firmware_pkgs) && [ -n "$fw_pkgs" ]; then
             chroot_apt_install $os_dir $fw_pkgs
         fi
+
+        po0_install_chrony "$os_dir"
 
         # 网络配置
         # 18.04+ netplan
@@ -8466,41 +8498,13 @@ refind_main_disk() {
 }
 
 sync_time() {
-    if false; then
-        # arm要手动从硬件同步时间，避免访问https出错
-        # do 机器第二次运行会报错
-        hwclock -s || true
-    fi
-
-    # ntp 时间差太多会无法同步？
-    # http 时间可能不准确，毕竟不是专门的时间服务器
-    #      也有可能没有 date header?
-    method=http
-
-    case "$method" in
-    ntp)
-        if is_in_china; then
-            ntp_server=ntp.aliyun.com
-        else
-            ntp_server=pool.ntp.org
-        fi
-        # -d[d]   Verbose
-        # -n      Run in foreground
-        # -q      Quit after clock is set
-        # -p      PEER
-        ntpd -d -n -q -p "$ntp_server"
-        ;;
-    http)
-        url="$(grep -m1 ^http /etc/apk/repositories)/$(uname -m)/APKINDEX.tar.gz"
-        # 可能有多行，取第一行
-        date_header=$(wget -S --no-check-certificate --spider "$url" 2>&1 | grep -m1 '^  Date:')
-        # gnu date 不支持 -D
-        busybox date -u -D "  Date: %a, %d %b %Y %H:%M:%S GMT" -s "$date_header"
-        ;;
-    esac
-
-    # 重启时 alpine 会自动写入到硬件时钟，因此这里跳过
-    # hwclock -w
+    # Bootstrap the Alpine installer clock using the same private time service.
+    # The caller tolerates failure; do not hold installation indefinitely if
+    # the NTP service is temporarily unavailable. Persistent targets use chrony.
+    timeout 30 ntpd -d -n -q \
+        -p time1.tencentyun.com -p time2.tencentyun.com \
+        -p time3.tencentyun.com -p time4.tencentyun.com \
+        -p time5.tencentyun.com
 }
 
 is_ubuntu_lts() {

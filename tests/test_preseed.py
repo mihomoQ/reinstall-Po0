@@ -90,6 +90,12 @@ class PreseedTests(unittest.TestCase):
         self.assertNotRegex(PRESEED, r"web_port|web_path|websocketd|logviewer|nginx")
         self.assertNotIn("$confhome/", PRESEED)
 
+    def test_chrony_is_installed_and_configured_before_first_boot(self):
+        self.assertIn("chrony", self.entries["pkgsel/include"][1].split())
+        self.assertEqual(self.entries["clock-setup/ntp-server"][1], "time1.tencentyun.com")
+        self.assertIn("sh /po0-assets/po0-chrony.sh /target || exit 1",
+                      self.entries["preseed/late_command"][1])
+
 
 if __name__ == "__main__":
     unittest.main()

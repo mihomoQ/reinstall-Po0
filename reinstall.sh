@@ -10,7 +10,7 @@ set -eE
 confhome=file:///po0-assets
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
-SCRIPT_VERSION=PO0-20261027-1
+SCRIPT_VERSION=PO0-20261027-2
 
 # 记录要用到的 windows 程序，运行时输出删除 \r
 WINDOWS_EXES='cmd powershell wmic reg diskpart netsh bcdedit mountvol'

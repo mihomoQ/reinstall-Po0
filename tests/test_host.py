@@ -165,6 +165,8 @@ printf 'kernel=%s\\ninitrd=%s\\nmirror=%s\\npreseed=%s\\ncmdline=%s%s\\n' \
                 self.assertIn("url=file:///po0-assets/debian.cfg", values["cmdline"])
                 self.assertIn("mirror/http/hostname=mirrors.tencentyun.com", values["cmdline"])
                 self.assertIn("extra_po0_security_host=mirrors.tencentyun.com", values["cmdline"])
+                self.assertIn("extra_deb_mirror=mirrors.tencentyun.com/debian", values["cmdline"])
+                self.assertNotIn("mirror.nju.edu.cn", values["cmdline"])
 
     def test_all_existing_distribution_choices_remain_parseable(self):
         choices = {

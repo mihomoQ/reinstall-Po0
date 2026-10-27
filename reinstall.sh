@@ -3635,6 +3635,10 @@ build_extra_cmdline() {
         elts deb_mirror \
         username ssh_port rdp_port allow_ping po0_security_host; do
         value=${!key}
+        if [ "$key" = deb_mirror ] && [ -n "$value" ]; then
+            value=$(po0_rewrite_url "http://$value") || return
+            value=${value#*://}
+        fi
         if [ -n "$value" ]; then
             is_need_quote "$value" &&
                 extra_cmdline+=" extra_$key='$value'" ||
@@ -5166,6 +5170,9 @@ EOF
             fi
             ;;
         esac
+
+        # Accept public-key files copied from Windows without retaining CR bytes.
+        ssh_key=$(printf '%s\n' "$ssh_key" | del_cr)
 
         # 检查 key 格式
         if ! is_valid_ssh_key "$ssh_key"; then

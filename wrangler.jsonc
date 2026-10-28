@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "reinstall-po0",
+  "main": "worker.mjs",
   "compatibility_date": "2026-10-28",
   "workers_dev": true,
   "preview_urls": false,
@@ -8,7 +9,12 @@
     { "pattern": "reinstall.aa.jp.eu.org", "custom_domain": true }
   ],
   "assets": {
-    "directory": "./dist/worker",
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/reinstall.sh"],
     "html_handling": "none"
+  },
+  "build": {
+    "command": "git archive --format=tar.gz --prefix=reinstall-Po0/ --output=public/reinstall.tar.gz HEAD"
   }
 }

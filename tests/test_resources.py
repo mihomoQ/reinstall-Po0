@@ -1,11 +1,8 @@
-"""Exercise actual mirror rules, local asset failures, and release contents."""
-import hashlib
-import importlib.util
+"""Exercise actual mirror rules and local asset failures."""
 import os
 from pathlib import Path
 import shutil
 import subprocess
-import tarfile
 import tempfile
 import unittest
 
@@ -72,23 +69,6 @@ class Resources(unittest.TestCase):
     def test_incomplete_bundle_fails(self):
         self.assets.joinpath('po0-assets.list').write_text('missing.sh', encoding='utf-8')
         self.assertNotEqual(self.shell('po0_check_bundle', check=False).returncode, 0)
-
-    def test_bundle_hashes_and_excluded_operator_state(self):
-        spec = importlib.util.spec_from_file_location('bundle', ROOT / 'tools/build-bundle.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        archive = module.build(self.assets / 'test.tar.gz')
-        with tarfile.open(archive) as tf:
-            members = {m.name.removeprefix('reinstall-Po0/'): tf.extractfile(m).read() for m in tf.getmembers()}
-        self.assertNotIn('po0.conf', members)
-        self.assertNotIn('po0-mirrors.conf', members)
-        self.assertNotIn('logviewer.html', members)
-        for line in members['SHA256SUMS'].decode().splitlines():
-            expected, name = line.split('  ', 1)
-            self.assertEqual(hashlib.sha256(members[name]).hexdigest(), expected, name)
-        for name, content in members.items():
-            if name.endswith('.sh'):
-                self.assertNotIn(b'\r\n', content, name)
 
 
 if __name__ == '__main__':

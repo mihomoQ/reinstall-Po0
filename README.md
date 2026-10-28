@@ -645,13 +645,13 @@ bash reinstall.sh reset
 
 ## 如何使用旧版本
 
-从 [本仓库提交历史](https://github.com/mihomoQ/reinstall-Po0/commits/main) 选择旧版本，检出完整代码后重新打包上传：
+从 [本仓库提交历史](https://github.com/mihomoQ/reinstall-Po0/commits/main) 选择旧版本，检出完整代码后直接打包：
 
 ```bash
 git clone https://github.com/mihomoQ/reinstall-Po0.git
 cd reinstall-Po0
 git checkout COMMIT_ID
-python3 tools/build-bundle.py
+git archive --format=tar.gz --prefix=reinstall-Po0/ -o reinstall.tar.gz HEAD
 ```
 
 将 `COMMIT_ID` 替换为对应提交，整套文件一起更新。
@@ -661,7 +661,7 @@ python3 tools/build-bundle.py
 1. Fork 本仓库。
 2. 需要更换内网源时，将 `po0.conf.example` 复制为 `po0.conf`，设置 `PO0_MIRROR_BASE`，格式为 HTTP 主机和可选端口，不包含路径。
 3. 单独的下载地址可通过 `po0-mirrors.conf` 配置前缀映射，格式见 `po0-mirrors.conf.example`。
-4. 修改代码后运行 `python3 tools/build-bundle.py`，上传并使用完整安装包。两个自定义配置文件不包含在生成的包中，需要自行上传。
+4. 修改代码并提交后，运行 `npx wrangler deploy` 发布。
 
 PO0 公网 80/443 受限，自定义镜像、公钥和驱动链接需要使用机器能够访问的地址；公钥也可以直接使用本地文件。
 

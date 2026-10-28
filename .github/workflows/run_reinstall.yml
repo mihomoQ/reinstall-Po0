@@ -23,6 +23,7 @@ jobs:
           busybox ash -n po0-chrony.sh
           busybox ash -n po0-cloud.sh
           sh -n po0-lib.sh
+          node --check worker.mjs
       - name: Run isolated tests
         run: |
           python3 -m unittest discover -s tests -p 'test*.py' -v
@@ -32,18 +33,12 @@ jobs:
           bash tests/test-trans-chrony.sh
           sh tests/test-cloud-transport.sh
           bash tests/test-trans-cloud.sh
-      - name: Build and verify the portable bundle
+          node --test tests/test-worker.mjs
+      - name: Archive source
         run: |
-          python3 tools/build-bundle.py
-          python3 tools/build-worker.py
-          bash -n dist/worker/reinstall.sh
-          mkdir -p dist/check
-          tar xzf dist/reinstall-Po0.tar.gz -C dist/check
-          cd dist/check/reinstall-Po0
-          sha256sum -c SHA256SUMS
+          git archive --format=tar.gz --prefix=reinstall-Po0/ --output=public/reinstall.tar.gz HEAD
+          tar tzf public/reinstall.tar.gz >/dev/null
       - uses: actions/upload-artifact@v4
         with:
           name: reinstall-Po0-candidate
-          path: |
-            dist/reinstall-Po0.tar.gz
-            dist/worker/reinstall.sh
+          path: public/reinstall.tar.gz

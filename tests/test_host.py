@@ -4,14 +4,12 @@ All writes are to disposable fixture directories. Boot staging is checked
 structurally because executing it would change the host's boot configuration.
 """
 
-import importlib.util
 import os
 from pathlib import Path
 import re
 import shlex
 import shutil
 import subprocess
-import tarfile
 import tempfile
 import unittest
 
@@ -38,17 +36,10 @@ class HostPreparation(unittest.TestCase):
         self.scratch = Path(self.temp.name)
         self.bundle = self.scratch / "complete release with spaces"
         self.bundle.mkdir()
-        spec = importlib.util.spec_from_file_location("host_test_bundle", ROOT / "tools/build-bundle.py")
-        builder = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(builder)
-        archive = builder.build(self.scratch / "release.tar.gz")
-        with tarfile.open(archive) as package:
-            for member in package.getmembers():
-                name = member.name.removeprefix("reinstall-Po0/")
-                self.assertNotIn("..", Path(name).parts)
-                destination = self.bundle / name
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_bytes(package.extractfile(member).read())
+        for name in ASSETS:
+            destination = self.bundle / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, destination)
         self.env = dict(os.environ, PO0_ASSET_DIR=self.bundle.as_posix())
         self.env["LC_ALL"] = "C"
         self.env.pop("PO0_MIRROR_BASE", None)

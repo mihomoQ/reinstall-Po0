@@ -646,13 +646,13 @@ bash reinstall.sh reset
 
 ## How to Use an Old Version
 
-Choose a commit from [this repository's history](https://github.com/mihomoQ/reinstall-Po0/commits/main) on a computer with GitHub access, then build and upload the complete version:
+Choose a commit from [this repository's history](https://github.com/mihomoQ/reinstall-Po0/commits/main) on a computer with GitHub access, then archive the complete version:
 
 ```bash
 git clone https://github.com/mihomoQ/reinstall-Po0.git
 cd reinstall-Po0
 git checkout COMMIT_ID
-python3 tools/build-bundle.py
+git archive --format=tar.gz --prefix=reinstall-Po0/ -o reinstall.tar.gz HEAD
 ```
 
 Replace `COMMIT_ID` with the desired commit. Keep all helper files from the same version together.
@@ -662,7 +662,7 @@ Replace `COMMIT_ID` with the desired commit. Keep all helper files from the same
 1. Fork this repository.
 2. Copy `po0.conf.example` to `po0.conf` to change the internal mirror. `PO0_MIRROR_BASE` is an HTTP host with an optional port and no repository path.
 3. Copy `po0-mirrors.conf.example` to `po0-mirrors.conf` for individual HTTP(S) prefix mappings. Each line contains the original prefix and its replacement.
-4. Modify the code, rebuild the complete bundle, and upload it. Private configuration files are kept out of the public repository and generated bundle.
+4. Commit your changes, then run `npx wrangler deploy` to publish.
 
 ## Thanks
 

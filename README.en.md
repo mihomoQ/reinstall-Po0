@@ -89,6 +89,16 @@ Compressed QCOW2 images additionally need RAM for the archive plus 512 MiB and s
 
 ## Download (Current system is <img width="20" height="20" src="https://www.kernel.org/theme/images/logos/favicon.png" /> Linux)
 
+Download directly on PO0:
+
+```bash
+curl -fO https://reinstall.aa.jp.eu.org:8443/reinstall.sh || wget -O ${_##*/} $_
+```
+
+This HTTPS endpoint uses port 8443 and serves a self-extracting script containing the complete installation bundle. No additional helper-file downloads are needed.
+
+### Download the complete source or bundle
+
 Download the complete repository on a computer with GitHub access, then transfer it to PO0 over SCP/SFTP:
 
 ```bash
@@ -113,11 +123,15 @@ cd reinstall-Po0
 sha256sum -c SHA256SUMS
 ```
 
-Replace `YOUR_SERVER` with the server address and use your SSH port and key. Keep the complete directory together; `reinstall.sh` needs its accompanying files.
+Replace `YOUR_SERVER` with the server address and use your SSH port and key. When using the repository source, keep the complete directory together; its `reinstall.sh` needs the accompanying files.
 
 ## Usage
 
-Run `bash reinstall.sh ...` as root from the complete directory on Linux.
+Run the downloaded script as root on Linux. When using the source directory, change into that directory first:
+
+```bash
+bash reinstall.sh debian
+```
 
 ### Feature 1: Install <img width="16" height="16" src="https://www.kernel.org/theme/images/logos/favicon.png" /> Linux
 
@@ -681,6 +695,15 @@ Replace `COMMIT_ID` with the desired commit. Keep all helper files from the same
 2. Copy `po0.conf.example` to `po0.conf` to change the internal mirror. `PO0_MIRROR_BASE` is an HTTP host with an optional port and no repository path.
 3. Copy `po0-mirrors.conf.example` to `po0-mirrors.conf` for individual HTTP(S) prefix mappings. Each line contains the original prefix and its replacement.
 4. Modify the code, rebuild the complete bundle, and upload it. Private configuration files are kept out of the public repository and generated bundle.
+
+To publish the Cloudflare download endpoint, set your Worker name and domain in `wrangler.jsonc`, then run:
+
+```bash
+python3 tools/build-worker.py
+npx wrangler deploy
+```
+
+The generated `dist/worker/reinstall.sh` is self-extracting. Use the complete directory method when supplying local `po0.conf` or `po0-mirrors.conf` files.
 
 ## Thanks
 

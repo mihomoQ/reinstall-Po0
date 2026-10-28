@@ -89,6 +89,16 @@ gzip/xz/zstd 压缩的云镜像需要额外内存缓存：压缩包大小加 512
 
 ## 下载（当前系统是 <img width="20" height="20" src="https://www.kernel.org/theme/images/logos/favicon.png" /> Linux）
 
+直接在 PO0 下载：
+
+```bash
+curl -fO https://reinstall.aa.jp.eu.org:8443/reinstall.sh || wget -O ${_##*/} $_
+```
+
+下载地址使用 HTTPS 8443，提供包含完整安装资源的自解压脚本，无需额外下载辅助文件。
+
+### 下载完整源码或安装包
+
 在能访问 GitHub 的电脑上下载完整仓库，再通过 SCP/SFTP 上传到 PO0：
 
 ```bash
@@ -113,11 +123,15 @@ cd reinstall-Po0
 sha256sum -c SHA256SUMS
 ```
 
-将 `YOUR_SERVER` 替换为服务器地址。需要保留完整目录，不能只上传 `reinstall.sh`。
+将 `YOUR_SERVER` 替换为服务器地址。使用源码方式时需要保留完整目录，不能只上传仓库中的 `reinstall.sh`。
 
 ## 使用
 
-在 Linux 上以 root 进入完整脚本目录，运行 `bash reinstall.sh ...`。
+在 Linux 上以 root 运行下载的脚本；使用源码方式时先进入完整目录：
+
+```bash
+bash reinstall.sh debian
+```
 
 ### 功能 1: 安装 <img width="16" height="16" src="https://www.kernel.org/theme/images/logos/favicon.png" /> Linux
 
@@ -680,6 +694,15 @@ python3 tools/build-bundle.py
 2. 需要更换内网源时，将 `po0.conf.example` 复制为 `po0.conf`，设置 `PO0_MIRROR_BASE`，格式为 HTTP 主机和可选端口，不包含路径。
 3. 单独的下载地址可通过 `po0-mirrors.conf` 配置前缀映射，格式见 `po0-mirrors.conf.example`。
 4. 修改代码后运行 `python3 tools/build-bundle.py`，上传并使用完整安装包。两个自定义配置文件不包含在生成的包中，需要自行上传。
+
+发布 Cloudflare 下载入口时，先在 `wrangler.jsonc` 中设置 Worker 名称和域名，再运行：
+
+```bash
+python3 tools/build-worker.py
+npx wrangler deploy
+```
+
+生成的 `dist/worker/reinstall.sh` 为自解压单文件。需要使用本地 `po0.conf` 或 `po0-mirrors.conf` 时，使用完整目录方式。
 
 PO0 公网 80/443 受限，自定义镜像、公钥和驱动链接需要使用机器能够访问的地址；公钥也可以直接使用本地文件。
 

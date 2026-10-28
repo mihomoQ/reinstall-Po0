@@ -3,3 +3,5 @@ po0-mirrors.conf
 SHA256SUMS
 dist/
 __pycache__/
+.wrangler/
+.dev.vars*

@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "reinstall-po0",
+  "compatibility_date": "2026-10-28",
+  "workers_dev": true,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "reinstall.aa.jp.eu.org", "custom_domain": true }
+  ],
+  "assets": {
+    "directory": "./dist/worker",
+    "html_handling": "none"
+  }
+}

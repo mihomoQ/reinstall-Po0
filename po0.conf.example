@@ -1,0 +1,4 @@
+# Copy to po0.conf beside reinstall.sh. This file is sourced as shell code.
+# Default mirror origin. No trailing repository path; a custom port is allowed.
+PO0_MIRROR_BASE=http://mirrors.tencentyun.com
+# Per-resource overrides go in po0-mirrors.conf (see the example).

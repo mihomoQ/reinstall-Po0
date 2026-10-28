@@ -1,0 +1,5 @@
+# Literal source-prefix destination-prefix; first match wins. No inline comments.
+# Use an operator-controlled address/port reachable from the Po0 installer.
+# Tencent currently lacks the Ubuntu cloud-images and Debian cdimage trees.
+# https://mirror.nju.edu.cn/ubuntu-cloud-images/ http://YOUR-MIRROR:8080/ubuntu-cloud-images/
+# https://mirror.nju.edu.cn/debian-cdimage/ http://YOUR-MIRROR:8080/debian-cdimage/

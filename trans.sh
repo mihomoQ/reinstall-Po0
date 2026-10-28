@@ -8,9 +8,24 @@
 # 出错后停止运行，将进入到登录界面，防止失联
 set -eE
 
+# Every stage uses the same local bundle. Never fetch helper code after reboot.
+PO0_ASSET_DIR=${PO0_ASSET_DIR:-/po0-assets}
+if ! [ -r "$PO0_ASSET_DIR/po0-lib.sh" ]; then
+    printf '%s\n' "Missing Po0 bundle: $PO0_ASSET_DIR/po0-lib.sh" >&2
+    exit 1
+fi
+# shellcheck source=po0-lib.sh
+. "$PO0_ASSET_DIR/po0-lib.sh"
+if ! [ -r "$PO0_ASSET_DIR/po0-cloud.sh" ]; then
+    printf '%s\n' "Missing Po0 bundle: $PO0_ASSET_DIR/po0-cloud.sh" >&2
+    exit 1
+fi
+# shellcheck source=po0-cloud.sh
+. "$PO0_ASSET_DIR/po0-cloud.sh"
+
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 # shellcheck disable=SC2034
-SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0005
+SCRIPT_VERSION=PO0-20261028-4
 
 TRUE=0
 FALSE=1
@@ -131,6 +146,17 @@ killall() {
 # retry 5 command wget | head -c 1048576 会触发 retry，下载 5 次
 # command wget "$@" --tries=5 | head -c 1048576 不会触发 wget 自带的 retry，只下载 1 次
 wget() {
+    # Only known repository trees/custom rules are mapped; preserve argument boundaries.
+    local po0_arg po0_count=$#
+    while [ "$po0_count" -gt 0 ]; do
+        po0_arg=$1
+        shift
+        case "$po0_arg" in
+        http://* | https://*) po0_arg=$(po0_rewrite_url "$po0_arg") || return ;;
+        esac
+        set -- "$@" "$po0_arg"
+        po0_count=$((po0_count - 1))
+    done
     show_url_in_args "$@" >&2
     if command wget 2>&1 | grep -q BusyBox; then
         # busybox wget 没有重试功能
@@ -253,7 +279,8 @@ remove_alpine_rootfs() {
 }
 
 download_via_browser() {
-    local url=$1
+    local url
+    url=$(po0_rewrite_url "$1") || return
     local path=$2
 
     local os_dir=/os/alpine_for_browser
@@ -275,12 +302,12 @@ download_via_browser() {
         npm install \
         --no-save --no-package-lock \
         --prefix "/work" \
-        $(is_in_china && echo '--registry=https://registry.npmmirror.com') \
+        --registry=https://registry.npmmirror.com \
         playwright
 
     # 下载文件
     # shellcheck disable=SC2154
-    wget "$confhome/download-via-browser.js" -O "$os_dir/work/download-via-browser.js"
+    po0_copy_asset download-via-browser.js "$os_dir/work/download-via-browser.js"
     retry 5 chroot "$os_dir" node /work/download-via-browser.js "$url" "/work/download_file"
     cp "$os_dir/work/download_file" "$path"
 
@@ -295,9 +322,9 @@ download_via_browser() {
 }
 
 download() {
-    local url=$1
+    local url
+    url=$(po0_rewrite_url "$1") || return
     local path=$2
-    local can_use_cn_mirror=${3:-false}
 
     # 有ipv4地址无ipv4网关的情况下，aria2可能会用ipv4下载，而不是ipv6
     # axel 在 lightsail 上会占用大量cpu
@@ -342,10 +369,7 @@ download() {
         -O "1=$(basename "$path")" \
         -U curl/7.54.1
 
-    if ! aria2c "$url" "$@" &&
-        ! { $can_use_cn_mirror && is_in_china && is_any_ipv4_has_internet &&
-            url_cn=https://files.m.daocloud.io/$(echo "$url" | sed -E 's,^https?://,,i') &&
-            aria2c "$url_cn" "$@"; }; then
+    if ! aria2c "$url" "$@"; then
         error_and_exit "Failed to download $url"
     fi
 
@@ -412,38 +436,6 @@ is_allow_ping() {
     [ -n "$allow_ping" ] && [ "$allow_ping" = 1 ]
 }
 
-setup_nginx() {
-    apk add nginx
-    # shellcheck disable=SC2154
-    wget $confhome/logviewer.html -O /logviewer.html
-    wget $confhome/logviewer-nginx.conf -O /etc/nginx/http.d/default.conf
-
-    sed -i "s/@WEB_PORT@/$web_port/gi" /etc/nginx/http.d/default.conf
-
-    # rc-service -q nginx start
-    if pgrep nginx >/dev/null; then
-        nginx -s reload
-    else
-        nginx
-    fi
-}
-
-setup_websocketd() {
-    apk add websocketd
-    apk add coreutils
-
-    mkdir -p /tmp/web
-    echo 'Wrong Path' >/tmp/web/index.html
-    # shellcheck disable=SC2154
-    wget $confhome/logviewer.html -O /tmp/web$web_path
-
-    killall -q websocketd || true
-    # websocketd 遇到 \n 才推送，因此要转换 \r 为 \n
-    websocketd --port "$web_port" --loglevel=fatal --staticdir=/tmp/web \
-        stdbuf -oL -eL \
-        sh -c "if [ \"\$PATH_INFO\" = \"$web_path\" ]; then tail -fn+0 /reinstall.log | tr '\r' '\n' | grep -Fiv -e password -e token; fi" &
-}
-
 get_approximate_ram_size() {
     # lsmem 需要 util-linux
     if false && is_have_cmd lsmem; then
@@ -457,27 +449,10 @@ get_approximate_ram_size() {
     echo "$ram_size"
 }
 
-setup_web_if_enough_ram() {
-    total_ram=$(get_approximate_ram_size)
-    # 512内存才安装
-    if [ "$total_ram" -ge 400 ]; then
-        # lighttpd 虽然运行占用内存少，但安装占用空间大
-        # setup_lighttpd
-        # setup_nginx
-        setup_websocketd
-    fi
-}
-
-setup_lighttpd() {
-    apk add lighttpd
-    ln -sf /reinstall.html /var/www/localhost/htdocs/index.html
-    rc-service -q lighttpd start
-}
-
 get_ttys() {
     prefix=$1
     # shellcheck disable=SC2154
-    wget $confhome/ttys.sh -O- | sh -s $prefix
+    sh "$PO0_ASSET_DIR/ttys.sh" "$prefix"
 }
 
 find_xda() {
@@ -557,7 +532,6 @@ extract_env_from_cmdline() {
     fi
     ssh_port=${ssh_port:-22}
     rdp_port=${rdp_port:-3389}
-    web_port=${web_port:-80}
 }
 
 ensure_service_started() {
@@ -772,10 +746,6 @@ is_any_ipv4_has_internet() {
     grep -q 1 /dev/netconf/*/ipv4_has_internet
 }
 
-is_in_china() {
-    grep -q 1 /dev/netconf/*/is_in_china
-}
-
 # 有 dhcpv4 不等于有网关，例如 vultr 纯 ipv6
 # 没有 dhcpv4 不等于是静态ip，可能是没有 ip
 is_dhcpv4() {
@@ -822,6 +792,18 @@ is_dhcpv6_or_slaac() {
     get_netconf_to dhcpv6_or_slaac
     # shellcheck disable=SC2154
     [ "$dhcpv6_or_slaac" = 1 ]
+}
+
+_should_add_ipv4_static_dns() {
+    get_netconf_to should_add_ipv4_static_dns
+    # shellcheck disable=SC2154
+    [ "$should_add_ipv4_static_dns" = 1 ]
+}
+
+_should_add_ipv6_static_dns() {
+    get_netconf_to should_add_ipv6_static_dns
+    # shellcheck disable=SC2154
+    [ "$should_add_ipv6_static_dns" = 1 ]
 }
 
 is_ipv4_has_internet() {
@@ -888,15 +870,11 @@ is_dhcpv6() {
     # 部分系统开机需要等 DHCPv6 超时
     # 这种情况需要禁用 DHCPv6
     if [ "$dhcpv6" = 1 ] && ! ip -6 -o addr show scope global dev "$ethx" | grep -q .; then
-        echo 'DHCPv6 flag is on, but DHCPv6 is not working.'
+        echo 'DHCPv6 flag is on, but DHCPv6 is not working.' >&2
         return 1
     fi
 
     [ "$dhcpv6" = 1 ]
-}
-
-is_have_ipv6() {
-    is_slaac || is_dhcpv6 || is_staticv6
 }
 
 is_enable_other_flag() {
@@ -988,12 +966,41 @@ is_need_change_rdp_port() {
     [ -n "$rdp_port" ] && ! [ "$rdp_port" = 3389 ]
 }
 
-is_need_manual_set_dnsv6() {
-    # 有没有可能是静态但是有 rdnss？
-    ! is_have_ipv6 && return $FALSE
-    is_dhcpv6 && return $FALSE
+should_add_ipv4_static_dns() {
+    # 无 ip 直接返回 FALSE
+    if ! { is_dhcpv4 || is_staticv4; }; then
+        return $FALSE
+    fi
+
+    # initrd-network 检测到需要手动设置 dns
+    if _should_add_ipv4_static_dns; then
+        return $TRUE
+    fi
+
+    # 正常情况
+    is_dhcpv4 && return $FALSE
+    is_staticv4 && return $TRUE
+}
+
+should_add_ipv6_static_dns() {
+    # 无 ip 直接返回 FALSE
+    if ! { is_slaac || is_dhcpv6 || is_staticv6; }; then
+        return $FALSE
+    fi
+
+    # initrd-network 检测到需要手动设置 dns
+    if _should_add_ipv6_static_dns; then
+        return $TRUE
+    fi
+
+    # 静态 ipv6 也可能有 rdnss？而且要配置客户端 dhcpv6 软件只获取 dns，目前没处理这种
     is_staticv6 && return $TRUE
-    is_slaac && ! is_enable_other_flag &&
+
+    # 有 slaac/dhcpv6 不代表有 rdnss 或 other flag，例如甲骨文
+
+    # dhcpv6 dns (other flag) 和 rdnss 都不能使用时才返回 $TRUE
+    { is_slaac || is_dhcpv6; } &&
+        ! is_enable_other_flag &&
         { ! is_have_rdnss || { is_have_rdnss && is_windows && ! is_windows_support_rdnss; }; }
 }
 
@@ -1006,11 +1013,7 @@ get_current_dns() {
     )
     # debian 11 initrd 没有 xargs awk
     # debian 12 initrd 没有 xargs
-    if false; then
-        grep '^nameserver' /etc/resolv.conf | awk '{print $2}' | grep -F "$mark" | cut -d '%' -f1
-    else
-        grep '^nameserver' /etc/resolv.conf | cut -d' ' -f2 | grep -F "$mark" | cut -d '%' -f1
-    fi
+    grep '^nameserver' /etc/resolv.conf | cut -d' ' -f2 | grep -F "$mark" | cut -d '%' -f1
 }
 
 to_upper() {
@@ -1246,19 +1249,22 @@ EOF
         } >>$conf_file
 
         # ipv4
-        if is_dhcpv4; then
-            echo "iface $ethx inet dhcp" >>$conf_file
-
-        elif is_staticv4; then
-            get_netconf_to ipv4_addr
-            get_netconf_to ipv4_gateway
-            cat <<EOF >>$conf_file
+        if is_dhcpv4 || is_staticv4; then
+            # ip
+            if is_dhcpv4; then
+                echo "iface $ethx inet dhcp" >>$conf_file
+            elif is_staticv4; then
+                get_netconf_to ipv4_addr
+                get_netconf_to ipv4_gateway
+                cat <<EOF >>$conf_file
 iface $ethx inet static
     address $ipv4_addr
     gateway $ipv4_gateway
 EOF
+            fi
             # dns
-            if list=$(get_current_dns 4); then
+            if should_add_ipv4_static_dns &&
+                list=$(get_current_dns 4); then
                 for dns in $list; do
                     cat <<EOF >>$conf_file
     dns-nameservers $dns
@@ -1330,7 +1336,7 @@ EOF
         fi
         # dns
         # 有 ipv6 但需设置 dns 的情况
-        if is_need_manual_set_dnsv6; then
+        if should_add_ipv6_static_dns; then
             for dns in $(get_current_dns 6); do
                 cat <<EOF >>$conf_file
     dns-nameserver $dns
@@ -1470,7 +1476,7 @@ EOF
     # 全局 dns
     need_set_dns=false
     for ethx in $(get_eths); do
-        if is_staticv4 || is_staticv6 || is_need_manual_set_dnsv6; then
+        if should_add_ipv4_static_dns || should_add_ipv6_static_dns; then
             need_set_dns=true
             break
         fi
@@ -1705,9 +1711,8 @@ install_alpine() {
     # 安装其他部件
     chroot /os setup-keymap us us
     chroot /os setup-timezone -i Asia/Shanghai
-    # 3.21 默认是 chrony
-    # 3.22 默认是 busybox ntp
-    printf '\n' | chroot /os setup-ntp || true
+    # Use the same internal chrony sources across supported Alpine versions.
+    po0_install_chrony /os
 
     # 设置公钥
     add_user_if_need /os
@@ -1716,8 +1721,8 @@ install_alpine() {
     fi
 
     # 下载 fix-eth-name
-    download "$confhome/fix-eth-name.sh" /os/fix-eth-name.sh
-    download "$confhome/fix-eth-name.initd" /os/etc/init.d/fix-eth-name
+    po0_copy_asset fix-eth-name.sh /os/fix-eth-name.sh
+    po0_copy_asset fix-eth-name.initd /os/etc/init.d/fix-eth-name
     chmod +x /os/etc/init.d/fix-eth-name
     chroot /os rc-update add fix-eth-name boot
 
@@ -1848,9 +1853,6 @@ install_nixos() {
     # 也可以用 export NIX_CONFIG 和 --option substituters https://mirror.nju.edu.cn/nix-channels/store
     # https://help.mirrorz.org/nix-channels/
     configure_nix_substituters() {
-        if ! is_in_china; then
-            return
-        fi
 
         nix_conf=/etc/nix/nix.conf
         mkdir -p "$(dirname "$nix_conf")"
@@ -1900,20 +1902,12 @@ install_nixos() {
             nix_ver=$(xz -dc </os/store-paths.xz | grep -F 'vm-test-run-nix-upgrade' |
                 head -1 | awk -F- '{print $7}' | grep .)
             rm -f /os/store-paths.xz
-            if is_in_china; then
                 sh_mirror=https://mirror.nju.edu.cn/nix
-            else
-                sh_mirror=https://releases.nixos.org/nix
-            fi
             sh=$sh_mirror/nix-$nix_ver/install
         else
             # 最新版 nix 在 nixos-install 时可能会出问题
             # https://github.com/bin456789/reinstall/issues/451
-            if is_in_china; then
                 sh=https://mirror.nju.edu.cn/nix/latest/install
-            else
-                sh=https://nixos.org/nix/install
-            fi
         fi
 
         apk add xz
@@ -1955,9 +1949,7 @@ install_nixos() {
         nix_bootloader="boot.loader.grub.device = \"/dev/$xda\";"
     fi
 
-    if is_in_china; then
         nix_substituters="nix.settings.substituters = lib.mkForce [ \"$mirror/store\" ];"
-    fi
 
     if [ -e /os/swapfile ] && $keep_swap; then
         nix_swap="swapDevices = [ { device = \"/swapfile\"; size = $swap_size; } ];"
@@ -2147,10 +2139,8 @@ EOF
     fi
 
     # 设置 channel
-    if is_in_china; then
         nixos-enter --root /os -- \
             /run/current-system/sw/bin/nix-channel --add $mirror/nixos-$releasever nixos
-    fi
 
     # 清理
     nix-env -e '*'
@@ -2184,7 +2174,7 @@ add_systemd_service() {
     if [ -n "$service_file" ]; then
         cp "$service_file" "$os_dir/etc/systemd/system/$service_name.service"
     else
-        download "$confhome/$service_name.service" "$os_dir/etc/systemd/system/$service_name.service"
+        po0_copy_asset "$service_name.service" "$os_dir/etc/systemd/system/$service_name.service"
     fi
     chroot "$os_dir" systemctl enable "$service_name.service"
 
@@ -2206,12 +2196,12 @@ add_fix_eth_name_systemd_service() {
 
     # 无需执行 systemctl daemon-reload
     # 因为 chroot 下执行会提示 Running in chroot, ignoring command 'daemon-reload'
-    download "$confhome/fix-eth-name.sh" "$os_dir/fix-eth-name.sh"
+    po0_copy_asset fix-eth-name.sh "$os_dir/fix-eth-name.sh"
     add_systemd_service "$os_dir" fix-eth-name
 }
 
 get_frpc_url() {
-    wget "$confhome/get-frpc-url.sh" -O- | sh -s "$@"
+    sh "$PO0_ASSET_DIR/get-frpc-url.sh" "$@"
 }
 
 add_frpc_systemd_service_if_need() {
@@ -2234,7 +2224,7 @@ add_frpc_systemd_service_if_need() {
 
         # frpc toml
         cp -f /configs/frpc.* "$os_dir/usr/local/etc/frpc/frpc.toml"
-        download "$confhome/frpc.service" /tmp/frpc.service
+        po0_copy_asset frpc.service /tmp/frpc.service
         if [ "$(chroot $os_dir systemctl --version | head -1 | awk '{print $2}')" -ge 247 ]; then
             # 新版本 systemd
             sed -i 's/^\[X-Service-New\]$/[Service]/' /tmp/frpc.service
@@ -2328,6 +2318,54 @@ basic_init() {
 
     # frpc
     add_frpc_systemd_service_if_need $os_dir
+}
+
+po0_configure_gentoo_sources() {
+    local os_dir=$1 make_conf=$1/etc/portage/make.conf
+    # Use the stage3's signed key package. Do not contact public WKD/keyservers
+    # or disable signature verification just because public HTTPS is blocked.
+    if ! grep -q GETUTO_EXTERNAL_REFRESH "$os_dir/usr/bin/getuto"; then
+        error_and_exit 'This Gentoo stage3 needs getuto with offline key refresh support.'
+        return 1
+    fi
+    [ -s "$os_dir/usr/share/openpgp-keys/gentoo-release.asc" ] || {
+        error_and_exit 'Gentoo stage3 is missing its release signing keys.'; return 1
+    }
+    mkdir -p "$os_dir/etc/portage/repos.conf" "$os_dir/etc/portage/binrepos.conf" || return
+    touch "$make_conf" || return
+    sed -i '/^# BEGIN Po0 sources$/,/^# END Po0 sources$/d' "$make_conf" || return
+    cat <<EOF >>"$make_conf"
+# BEGIN Po0 sources
+GENTOO_MIRRORS="$PO0_MIRROR_BASE/gentoo"
+FEATURES="getbinpkg force-mirror webrsync-gpg"
+PORTAGE_GPG_DIR="/etc/portage/webrsync-gnupg"
+PORTAGE_TRUST_HELPER="/usr/bin/env GETUTO_EXTERNAL_REFRESH=0 TERM=dumb /usr/bin/getuto"
+# END Po0 sources
+EOF
+    cat <<EOF >"$os_dir/etc/portage/repos.conf/gentoo.conf"
+[gentoo]
+location = /var/db/repos/gentoo
+sync-type = webrsync
+sync-webrsync-verify-signature = true
+sync-openpgp-key-path = /usr/share/openpgp-keys/gentoo-release.asc
+EOF
+}
+
+po0_initialize_gentoo_keys() {
+    local os_dir=$1
+    TERM=dumb GETUTO_EXTERNAL_REFRESH=0 chroot "$os_dir" getuto || return
+    # emerge-webrsync's GPG verifier requires ultimate trust for the release
+    # infrastructure key. Keep it separate from getuto's binary-package ring.
+    chroot "$os_dir" /bin/bash -s <<'EOF'
+set -euo pipefail
+keyring=/etc/portage/webrsync-gnupg
+install -d -m 700 "$keyring"
+gpg --homedir "$keyring" --batch --import /usr/share/openpgp-keys/gentoo-release.asc
+fingerprint=$(gpg --homedir "$keyring" --batch --with-colons --list-keys '<infrastructure@gentoo.org>' |
+    awk -F: '$1 == "fpr" && !found {print $10; found=1}')
+case "$fingerprint" in ''|*[!0-9A-Fa-f]*) exit 1 ;; esac
+printf '%s:6:\n' "$fingerprint" | gpg --homedir "$keyring" --batch --import-ownertrust
+EOF
 }
 
 install_arch_gentoo_aosc() {
@@ -2507,8 +2545,11 @@ EOF
         # 挂载伪文件系统
         mount_pseudo_fs $os_dir
 
-        # 下载仓库，选择 profile
-        chroot $os_dir emerge-webrsync
+        # Configure the internal snapshot source before the first repository
+        # fetch. The same signed snapshot mechanism remains active afterwards.
+        po0_configure_gentoo_sources "$os_dir" || return
+        po0_initialize_gentoo_keys "$os_dir" || return
+        chroot "$os_dir" emerge-webrsync || return
         profile=$(
             # 筛选 stable systemd，再选择最短的
             if false; then
@@ -2531,10 +2572,13 @@ EOF
 MAKEOPTS="-j$(get_build_threads 2048)"
 EOF
 
-        # 设置 http repo + binpkg repo
-        # https://mirror.nju.edu.cn/gentoo/releases/amd64/autobuilds/current-stage3-amd64-systemd-mergedusr/stage3-amd64-systemd-mergedusr-20240317T170433Z.tar.xz
-        mirror_short=$(echo "$img" | sed 's,/releases/.*,,')
-        mirror_long=$(echo "$img" | sed 's,/autobuilds/.*,,')
+        # Package sources are independent of any custom stage3 image URL.
+        case "$(uname -m)" in
+        x86_64) mirror_arch=amd64 ;;
+        aarch64) mirror_arch=arm64 ;;
+        *) error_and_exit 'Unsupported Gentoo binary-package architecture.'; return 1 ;;
+        esac
+        mirror_long=$PO0_MIRROR_BASE/gentoo/releases/$mirror_arch
         profile_ver=$(chroot $os_dir eselect profile show | grep -Eo '/[0-9.]*/' | cut -d/ -f2)
 
         if [ "$(uname -m)" = x86_64 ]; then
@@ -2547,63 +2591,13 @@ EOF
             binpkg_type=arm64
         fi
 
-        cat <<EOF >>$os_dir/etc/portage/make.conf
-GENTOO_MIRRORS="$mirror_short"
-FEATURES="getbinpkg"
-EOF
-
         cat <<EOF >$os_dir/etc/portage/binrepos.conf/gentoobinhost.conf
 [binhost]
 priority = 9999
 sync-uri = $mirror_long/binpackages/$profile_ver/$binpkg_type
 EOF
 
-        # 下载公钥
-
-        # getuto 会判断是否有 ${TERM} 且 ${TERM} 不是 dumb
-        # 符合条件则 source /lib/gentoo/functions.sh 导入 ebegin 等方法
-        # 不符合条件则自行创建 ebegin 等方法
-
-        # /lib/gentoo/functions.sh 会判断是否有 ${RC_OPENRC_PID}
-        # 有的话就不会导入 /functions/openrc.sh，也就不会导入 ebegin 方法
-
-        # 在 ssh 里运行 /trans.sh 时，没有 ${RC_OPENRC_PID}，${TERM} 是 xterm
-        # 因此 chroot $os_dir getuto 时不会报错
-
-        # 在 locald 里运行 /trans.sh 时，有 ${RC_OPENRC_PID}，${TERM} 是 linux
-        # 因此 chroot $os_dir getuto 时会报错说 ebegin: command not found
-
-        # 有两个解决方法
-        if true; then
-            TERM=dumb chroot $os_dir getuto
-        else
-            env -u RC_OPENRC_PID chroot $os_dir getuto
-        fi
-
         set_locale
-
-        # 安装 git 会升级 glibc，此时 /etc/locale.gen 不能为空，否则会提示生成所有 locale
-        # Generating all locales; edit /etc/locale.gen to save time/space
-        chroot $os_dir emerge dev-vcs/git
-
-        # 设置 git repo
-        if is_in_china; then
-            git_uri=https://mirror.nju.edu.cn/git/gentoo-portage.git
-        else
-            # github 不支持 ipv6
-            is_any_ipv4_has_internet && git_uri=https://github.com/gentoo-mirror/gentoo.git ||
-                git_uri=https://anongit.gentoo.org/git/repo/gentoo.git
-        fi
-
-        mkdir -p $os_dir/etc/portage/repos.conf
-        cat <<EOF >$os_dir/etc/portage/repos.conf/gentoo.conf
-[gentoo]
-location = /var/db/repos/gentoo
-sync-type = git
-sync-uri = $git_uri
-EOF
-        rm -rf $os_dir/var/db/repos/gentoo
-        chroot $os_dir emerge --sync
 
         # 一次性安装所有包，可减少软件包重复 rebuild ?
         local pkgs=
@@ -2692,12 +2686,14 @@ EOF
         chroot $os_dir systemctl enable systemd-resolved
 
         apk add cloud-init
-        # 第二次运行会报错
-        useradd systemd-network || true
         create_cloud_init_network_config net.cfg
         cat -n net.cfg
-        # 正常应该是 -D gentoo，但 alpine 的 cloud-init 包缺少 gentoo 配置
+
+        # cloud-init 渲染 networkd 配置时，系统要有 systemd-network 用户，不然会报错
+        # 加 || true 防止第二次运行报错
+        useradd --system systemd-network || true
         cloud-init devel net-convert -p net.cfg -k yaml -d out -D alpine -O networkd
+        userdel -r systemd-network
 
         # 注意名字是 10-cloud-init-eth*.network，fix-eth-name.sh 会此文件名查找配置文件
         cp out/etc/systemd/network/10-cloud-init-eth*.network $os_dir/etc/systemd/network/
@@ -2788,6 +2784,17 @@ get_url_hash() {
 }
 
 aria2c() {
+    # Only known repository trees/custom rules are mapped; preserve argument boundaries.
+    local po0_arg po0_count=$#
+    while [ "$po0_count" -gt 0 ]; do
+        po0_arg=$1
+        shift
+        case "$po0_arg" in
+        http://* | https://*) po0_arg=$(po0_rewrite_url "$po0_arg") || return ;;
+        esac
+        set -- "$@" "$po0_arg"
+        po0_count=$((po0_count - 1))
+    done
     if ! is_have_cmd aria2c; then
         apk add aria2
     fi
@@ -2962,6 +2969,11 @@ xda() {
 }
 
 create_part() {
+    # Every QCOW cloud image must pass size/source checks before wipefs.
+    if is_use_cloud_image && [ "${img_type:-}" = qemu ]; then
+        [ "${po0_cloud_prepared:-}" = "$img" ] ||
+            error_and_exit 'The cloud image was not validated before partitioning.'
+    fi
     # 除了 dd 都会用到
     info "Create Part"
 
@@ -3314,6 +3326,7 @@ create_cloud_init_network_config() {
 
     apk add yq-go
 
+    # 全局，不分网卡
     need_set_dns4=false
     need_set_dns6=false
 
@@ -3331,26 +3344,28 @@ create_cloud_init_network_config() {
         subnet_id=0
 
         # ipv4
-        if is_dhcpv4; then
-            yq -i ".network.config[$config_id].subnets[$subnet_id] = {\"type\": \"dhcp4\"}" $ci_file
-            subnet_id=$((subnet_id + 1))
-        elif is_staticv4; then
-            need_set_dns4=true
-            get_netconf_to ipv4_addr
-            get_netconf_to ipv4_gateway
-            yq -i ".network.config[$config_id].subnets[$subnet_id] = {
+        if is_dhcpv4 || is_staticv4; then
+            if is_dhcpv4; then
+                yq -i ".network.config[$config_id].subnets[$subnet_id] = {\"type\": \"dhcp4\"}" $ci_file
+            elif is_staticv4; then
+                get_netconf_to ipv4_addr
+                get_netconf_to ipv4_gateway
+                yq -i ".network.config[$config_id].subnets[$subnet_id] = {
                     \"type\": \"static\",
                     \"address\": \"$ipv4_addr\",
                     \"gateway\": \"$ipv4_gateway\" }
                     " $ci_file
-
-            # 旧版 cloud-init 有 bug
-            # 有的版本会只从第一种配置中读取 dns，有的从第二种读取
-            # 因此写两种配置
-            # https://github.com/canonical/cloud-init/commit/1b8030e0c7fd6fbff7e38ad1e3e6266ae50c83a5
-            for cur in $(get_current_dns 4); do
-                yq -i ".network.config[$config_id].subnets[$subnet_id].dns_nameservers += [\"$cur\"]" $ci_file
-            done
+            fi
+            if should_add_ipv4_static_dns; then
+                # 旧版 cloud-init 有 bug
+                # 有的版本会只从第一种配置中读取 dns，有的从第二种读取
+                # 因此写两种配置
+                # https://github.com/canonical/cloud-init/commit/1b8030e0c7fd6fbff7e38ad1e3e6266ae50c83a5
+                for cur in $(get_current_dns 4); do
+                    yq -i ".network.config[$config_id].subnets[$subnet_id].dns_nameservers += [\"$cur\"]" $ci_file
+                done
+                need_set_dns4=true
+            fi
             subnet_id=$((subnet_id + 1))
         fi
 
@@ -3400,7 +3415,7 @@ create_cloud_init_network_config() {
         fi
 
         # 有 ipv6 但需设置 dns 的情况
-        if is_need_manual_set_dnsv6; then
+        if should_add_ipv6_static_dns; then
             need_set_dns6=true
             for cur in $(get_current_dns 6); do
                 yq -i ".network.config[$config_id].subnets[$subnet_id].dns_nameservers += [\"$cur\"]" $ci_file
@@ -3454,7 +3469,7 @@ download_cloud_init_config() {
     recognize_ipv6_types=$3
 
     ci_file=$os_dir/etc/cloud/cloud.cfg.d/99_fallback.cfg
-    download $confhome/deprecated/cloud-init.yaml $ci_file
+    po0_copy_asset deprecated/cloud-init.yaml "$ci_file"
     # 删除注释行，除了第一行
     sed -i '1!{/^[[:space:]]*#/d}' $ci_file
 
@@ -3534,13 +3549,13 @@ modify_windows() {
 
     # 2. 允许 ping
     if is_allow_ping; then
-        download $confhome/windows-allow-ping.bat $os_dir/windows-allow-ping.bat
+        po0_copy_asset windows-allow-ping.bat "$os_dir/windows-allow-ping.bat"
         bats="$bats windows-allow-ping.bat"
     fi
 
     # 3. 合并分区
     # 可能 unattend.xml 已经设置了ExtendOSPartition，不过运行resize没副作用
-    download $confhome/windows-resize.bat $os_dir/windows-resize.bat
+    po0_copy_asset windows-resize.bat "$os_dir/windows-resize.bat"
     bats="$bats windows-resize.bat"
 
     # 4. 网络设置
@@ -3586,8 +3601,8 @@ EOF
         unzip -o -j "$os_dir/frpc/frpc.zip" '*/frpc.exe' -d "$os_dir/frpc/"
         rm -f "$os_dir/frpc/frpc.zip"
         cp -f /configs/frpc.* "$os_dir/frpc/"
-        download "$confhome/windows-frpc.xml" "$os_dir/frpc/frpc.xml"
-        download "$confhome/windows-frpc.bat" "$os_dir/frpc/frpc.bat"
+        po0_copy_asset windows-frpc.xml "$os_dir/frpc/frpc.xml"
+        po0_copy_asset windows-frpc.bat "$os_dir/frpc/frpc.bat"
         bats="$bats frpc\frpc.bat"
     fi
 
@@ -3639,7 +3654,7 @@ EOF
         unix2dos $scripts_ini
 
         # windows-del-gpo.bat
-        download $confhome/windows-del-gpo.bat $os_dir/windows-del-gpo.bat
+        po0_copy_asset windows-del-gpo.bat "$os_dir/windows-del-gpo.bat"
     else
         # 使用 SetupComplete
         setup_complete=$(get_path_in_correct_case $os_dir/Windows/Setup/Scripts/SetupComplete.cmd)
@@ -3909,6 +3924,7 @@ create_network_manager_config() {
 modify_linux() {
     local os_dir=$1
     info "Modify Linux"
+    po0_rewrite_target_repos "$os_dir"
 
     find_and_mount() {
         mount_point=$1
@@ -3924,7 +3940,7 @@ modify_linux() {
         for ethx in $(get_eths); do
             if is_staticv4 || is_staticv6; then
                 fix_sh=cloud-init-fix-onlink.sh
-                download "$confhome/deprecated/$fix_sh" "$os_dir/$fix_sh"
+                po0_copy_asset "deprecated/$fix_sh" "$os_dir/$fix_sh"
                 insert_into_file "$ci_file" after '^runcmd:' <<EOF
   - bash "/$fix_sh" && rm -f "/$fix_sh"
 EOF
@@ -3981,6 +3997,7 @@ EOF
             chroot $os_dir $mgr install -y $fw_pkgs
         fi
 
+        po0_install_chrony "$os_dir"
         restore_resolv_conf $os_dir
     fi
 
@@ -4028,14 +4045,7 @@ EOF
             fi
         else
             # non-ELTS
-            if is_in_china; then
-                # 不处理 security 源 security.debian.org/debian-security 和 /etc/apt/mirrors/debian-security.list
-                for file in $os_dir/etc/apt/mirrors/debian.list $os_dir/etc/apt/sources.list; do
-                    if [ -f "$file" ]; then
-                        sed -i "s|deb\.debian\.org/debian|$deb_mirror|" "$file"
-                    fi
-                done
-            fi
+            po0_rewrite_target_repos "$os_dir"
         fi
 
         # 标记所有内核为自动安装
@@ -4100,6 +4110,8 @@ EOF
             rm -rf $os_dir/etc/ssh/sshd_config
             UCF_FORCE_CONFFMISS=1 chroot $os_dir dpkg-reconfigure openssh-server
         fi
+
+        po0_install_chrony "$os_dir"
 
         # 镜像自带的网络管理器
         # debian 11 ifupdown
@@ -4370,7 +4382,7 @@ modify_os_on_disk() {
                 # find: /mnt/c/swapfile.sys: Permission denied
                 # shellcheck disable=SC1090
                 # find_file_ignore_case 也在这个文件里面
-                . <(wget -O- $confhome/windows-driver-utils.sh)
+                . "$PO0_ASSET_DIR/windows-driver-utils.sh"
                 if find_file_ignore_case /os/Windows/System32/ntoskrnl.exe >/dev/null 2>&1; then
                     # 其他地方会用到
                     is_windows() { true; }
@@ -4895,23 +4907,241 @@ disable_kdump() {
     fi
 }
 
+po0_cloud_memory_kb() {
+    awk '/^MemAvailable:/ {print $2; found=1} END {if (!found) exit 1}' /proc/meminfo
+}
+
+po0_cloud_unpack() {
+    # Bound decoder memory as well as the compressed-file RAM cache.
+    case "$img_type_warp" in
+    xz) xz --memlimit-decompress=256MiB -dc "$1" ;;
+    zstd) zstd --memory=256MB -dc "$1" ;;
+    gzip) gzip -dc "$1" ;;
+    *) return 1 ;;
+    esac
+}
+
+po0_cache_compressed_cloud() (
+    local meta=$1 disk_bytes=$2 memory_kb free_kb required_kb magic count
+    # /tmp is in the Alpine live environment's RAM filesystem. Keep the one
+    # downloaded compressed file across create_part; never cache on the old OS.
+    local cache_dir=${PO0_CLOUD_CACHE_DIR:-/tmp/po0-cloud-cache}
+    mkdir -p "$cache_dir" || return
+    memory_kb=$(po0_cloud_memory_kb) || return
+    free_kb=$(df -Pk "$cache_dir" | awk 'NR == 2 {print $4}')
+    case "$memory_kb:$free_kb" in *[!0-9:]*|:*|*:)
+        error_and_exit 'Cannot determine RAM space for the compressed cloud image.'; return 1 ;;
+    esac
+    required_kb=$(((po0_cloud_image_bytes + 1023) / 1024))
+    if [ "$memory_kb" -lt "$((required_kb + 512 * 1024))" ] ||
+        [ "$free_kb" -lt "$((required_kb + 1024))" ]; then
+        error_and_exit 'Compressed cloud image needs RAM for the archive plus 512 MiB; use an uncompressed QCOW2 image on this machine.'
+        return 1
+    fi
+    po0_cloud_ram_cache=$(mktemp "$cache_dir/image.XXXXXX") || return
+    cache_keep=0
+    trap 'rm -f "$po0_cloud_ram_cache.header" "$po0_cloud_ram_cache.count"; [ "$cache_keep" = 1 ] || rm -f "$po0_cloud_ram_cache"' EXIT
+    po0_cloud_fetch "$img" "$po0_cloud_ram_cache" || return
+    po0_cloud_verify "$po0_cloud_ram_cache" "$meta" || return
+    apk add "$img_type_warp" >&2 || return
+    # Count the complete expanded stream without storing a second image in RAM.
+    # A stream larger than the whole disk cannot fit: bound it before counting.
+    if ! (
+        set -o pipefail
+        po0_cloud_unpack "$po0_cloud_ram_cache" | head -c "$((disk_bytes + 1))" | {
+            dd bs=1 count=4 of="$po0_cloud_ram_cache.header" 2>/dev/null || exit
+            wc -c >"$po0_cloud_ram_cache.count"
+        }
+    ); then
+        error_and_exit 'Compressed cloud image is corrupt, too large or exceeds decoder memory.'
+        return 1
+    fi
+    magic=$(od -An -tx1 "$po0_cloud_ram_cache.header" | tr -d '[:space:]')
+    [ "$magic" = 514649fb ] || {
+        error_and_exit 'The decompressed cloud image is not QCOW2.'; return 1
+    }
+    count=$(tr -d '[:space:]' <"$po0_cloud_ram_cache.count")
+    po0_cloud_expanded_bytes=$((count + 4))
+    [ "$po0_cloud_expanded_bytes" -le "$disk_bytes" ] || {
+        error_and_exit 'Expanded cloud image is larger than the target disk.'; return 1
+    }
+    rm -f "$po0_cloud_ram_cache.header" "$po0_cloud_ram_cache.count"
+    cache_keep=1
+    printf '%s %s\n' "$po0_cloud_expanded_bytes" "$po0_cloud_ram_cache"
+)
+
+po0_prepare_rsync_cloud() {
+    # `/trans.sh alpine` explicitly selects the rescue installation. Its kernel
+    # command line may still contain the failed cloud image's URL and metadata.
+    # Do not validate or fetch that obsolete image when installing Alpine.
+    if [ "${distro:-}" = alpine ] && ! is_use_cloud_image; then
+        return 0
+    fi
+    case "${img:-}" in
+    rsync://*) ;;
+    http://*|https://*) is_use_cloud_image && [ "${img_type:-}" = qemu ] || return 0 ;;
+    *) return 0 ;;
+    esac
+    po0_cloud_prepared=
+    if ! is_use_cloud_image || [ "${img_type:-}" != qemu ]; then
+        error_and_exit 'Rsync is supported for QCOW cloud images only, not raw DD or ISO streaming.'
+        return 1
+    fi
+
+    local meta=${PO0_CLOUD_META_FILE:-/configs/po0-cloud-image.meta}
+    local saved_url saved_type saved_sha checksum remote_size expected_type storage_bytes
+    local disk_bytes boot_mb minimum_bytes cache_result
+    [ -r "$meta" ] || {
+        error_and_exit 'Missing cloud image metadata from the host preparation stage.'
+        return 1
+    }
+    # Metadata is data, never executable shell input.
+    saved_url=$(po0_cloud_meta_get url "$meta") || return
+    saved_type=$(po0_cloud_meta_get type "$meta") || return
+    checksum=$(po0_cloud_meta_get checksum "$meta") || return
+    saved_sha=$(po0_cloud_meta_get sha256 "$meta") || saved_sha=
+    po0_cloud_image_bytes=$(po0_cloud_meta_get size "$meta") || return
+    expected_type="qemu${img_type_warp:+.$img_type_warp}"
+    [ "$saved_url" = "$img" ] && [ "$saved_type" = "$expected_type" ] || {
+        error_and_exit 'Cloud image URL/type differs from the prepared metadata.'
+        return 1
+    }
+    case "$checksum" in
+    sha256)
+        case "$saved_sha" in ''|*[!0-9a-f]*)
+            error_and_exit 'Invalid cloud image SHA256 metadata.'; return 1 ;;
+        esac
+        [ "${#saved_sha}" -eq 64 ] || {
+            error_and_exit 'Invalid cloud image SHA256 length.'; return 1
+        } ;;
+    unavailable)
+        [ -z "$saved_sha" ] || {
+            error_and_exit 'Conflicting cloud image checksum metadata.'; return 1
+        } ;;
+    *) error_and_exit 'Invalid cloud image checksum mode.'; return 1 ;;
+    esac
+    case "$po0_cloud_image_bytes" in
+    unknown)
+        case "$img" in http://*|https://*) ;; *) return 1 ;; esac
+        [ -z "${img_type_warp:-}" ] || {
+            error_and_exit 'Compressed HTTP cloud image needs Content-Length for RAM and disk sizing.'; return 1
+        } ;;
+    ''|*[!0-9]*)
+        error_and_exit 'Invalid cloud image size metadata.'; return 1 ;;
+    *)
+        [ "$po0_cloud_image_bytes" -gt 0 ] || {
+            error_and_exit 'Cloud image size must be positive.'; return 1
+        } ;;
+    esac
+
+    # Plain images use the exact listed size. Compressed images are downloaded
+    # once into RAM and measured here, before any target partition changes.
+    po0_cloud_ram_cache=
+    po0_cloud_expanded_bytes=$po0_cloud_image_bytes
+    if [ -n "${img_type_warp:-}" ]; then
+        case "$img_type_warp" in xz|gzip|zstd) ;; *)
+            error_and_exit 'Unsupported rsync cloud image compression.'; return 1 ;;
+        esac
+    fi
+    disk_bytes=$(get_disk_size "/dev/$xda") || return
+    case "$disk_bytes" in ''|*[!0-9]*)
+        error_and_exit 'Cannot determine target disk size before rsync installation.'; return 1 ;;
+    esac
+    # Check the source before destructive operations. APK stays on the internal
+    # repository; only the cloud image and its small manifest use rsync.
+    case "$img" in
+    rsync://*) apk add rsync || return; remote_size=$(po0_cloud_rsync_size "$img") || return ;;
+    *) apk add curl || return; remote_size=$(po0_cloud_http_size "$img") || return ;;
+    esac
+    [ "$remote_size" = unknown ] || [ "$po0_cloud_image_bytes" = unknown ] ||
+        [ "$remote_size" = "$po0_cloud_image_bytes" ] || {
+        error_and_exit 'The cloud image changed size after host preparation.'
+        return 1
+    }
+    if [ -n "${img_type_warp:-}" ]; then
+        cache_result=$(po0_cache_compressed_cloud "$meta" "$disk_bytes") || return
+        po0_cloud_expanded_bytes=${cache_result%% *}
+        po0_cloud_ram_cache=${cache_result#* }
+    fi
+    storage_bytes=$po0_cloud_expanded_bytes
+    if [ "$storage_bytes" = unknown ]; then
+        # Preserve the upstream 2 GiB staging fallback for HTTP without a size.
+        storage_bytes=0
+        po0_cloud_installer_mb=2048
+    else
+        po0_cloud_installer_mb=$(get_part_size_mb_for_file_size_b "$storage_bytes") || return
+    fi
+    if is_efi; then boot_mb=101; else boot_mb=2; fi
+    # This is only a hard lower bound, not a guarantee that a distro's files
+    # fit. Reject impossible staging layouts before wipefs erases the disk.
+    minimum_bytes=$(((po0_cloud_installer_mb + boot_mb + 1024) * 1024 * 1024))
+    [ "$minimum_bytes" -gt "$storage_bytes" ] || {
+        [ -z "$po0_cloud_ram_cache" ] || rm -f "$po0_cloud_ram_cache"
+        error_and_exit 'Cloud image partition reservation overflow.'; return 1
+    }
+    [ "$disk_bytes" -ge "$minimum_bytes" ] || {
+        [ -z "$po0_cloud_ram_cache" ] || rm -f "$po0_cloud_ram_cache"
+        error_and_exit 'Not enough disk space for the staged image, boot area and at least 1 GiB of OS space.'
+        return 1
+    }
+    po0_cloud_prepared=$img
+}
+
+po0_download_rsync_qcow() {
+    local target=$1 meta=${PO0_CLOUD_META_FILE:-/configs/po0-cloud-image.meta}
+    local expanded_actual
+    [ "${po0_cloud_prepared:-}" = "$img" ] || {
+        error_and_exit 'Cloud image was not prepared.'; return 1
+    }
+    if [ -n "${img_type_warp:-}" ]; then
+        [ -n "${po0_cloud_ram_cache:-}" ] && [ -f "$po0_cloud_ram_cache" ] || {
+            error_and_exit 'Missing compressed image RAM cache; refusing a second download.'; return 1
+        }
+        po0_cloud_verify "$po0_cloud_ram_cache" "$meta" || return
+        if ! (
+            set -o pipefail
+            po0_cloud_unpack "$po0_cloud_ram_cache" >"$target"
+        ); then
+            error_and_exit 'Failed to unpack the verified cloud image.'
+            return 1
+        fi
+        expanded_actual=$(wc -c <"$target" | tr -d '[:space:]')
+        [ "$expanded_actual" = "$po0_cloud_expanded_bytes" ] || {
+            error_and_exit 'Expanded cloud image size differs from the measured RAM cache.'
+            return 1
+        }
+        rm -f "$po0_cloud_ram_cache"
+        po0_cloud_ram_cache=
+    else
+        po0_cloud_fetch "$img" "$target" || return
+        po0_cloud_verify "$target" "$meta" || return
+    fi
+    po0_check_qcow "$target"
+}
+
+po0_check_qcow() {
+    local target=$1 image_info
+    # Force QCOW2: auto-detection treats arbitrary text as a successful raw
+    # image. Reject dependencies on other local files before qemu-nbd opens it.
+    image_info=$(qemu-img info -f qcow2 --output=json "$target") || return
+    if printf '%s\n' "$image_info" | grep -Eq '"(backing-filename|full-backing-filename|data-file)"[[:space:]]*:'; then
+        error_and_exit 'Cloud image must be self-contained (no backing or external data file).'
+        return 1
+    fi
+    qemu-img check -f qcow2 "$target" || return
+}
+
 download_qcow() {
-    apk add qemu-img
+    apk add qemu-img || return
     info "Download qcow2 image"
 
-    mkdir -p /installer
-    mount /dev/disk/by-label/installer /installer
+    mkdir -p /installer || return
+    mount /dev/disk/by-label/installer /installer || return
 
     qcow_file=/installer/cloud_image.qcow2
-    if [ -n "$img_type_warp" ]; then
-        # 边下载边解压，单线程下载
-        # 用官方 wget ，带进度条
-        apk add wget
-        wget $img -O- | pipe_extract >$qcow_file
-    else
-        # 多线程下载
-        download "$img" "$qcow_file"
-    fi
+    # Both HTTP and rsync use the same metadata, single payload transfer,
+    # decompression-error propagation and strict QCOW2 validation path.
+    po0_download_rsync_qcow "$qcow_file" || return
 }
 
 connect_qcow() {
@@ -4970,49 +5200,97 @@ get_part_size_mb_for_file_size_b() {
 }
 
 get_cloud_image_part_size() {
-    # 7
-    # https://cloud.centos.org/centos/7/images/CentOS-7-x86_64-GenericCloud-2211.qcow2c 400m
+    [ "${po0_cloud_prepared:-}" = "$img" ] || {
+        error_and_exit 'Cloud image sizing requires validated preparation metadata.'
+        return 1
+    }
+    # Compressed archives stay in RAM; only expanded QCOW2 uses this partition.
+    echo "${po0_cloud_installer_mb}MiB"
+}
 
-    # 8
-    # https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.qcow2 600m
-    # https://download.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud-Base.latest.x86_64.qcow2 1.8g
-    # https://yum.oracle.com/templates/OracleLinux/OL8/u9/x86_64/OL8U9_x86_64-kvm-b219.qcow2 1g
-    # https://rhel-8.10-x86_64-kvm.qcow2 1g
-
-    # 9
-    # https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2 1.2g
-    # https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2 600m
-    # https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2 600m
-    # https://yum.oracle.com/templates/OracleLinux/OL9/u3/x86_64/OL9U3_x86_64-kvm-b220.qcow2 600m
-    # https://rhel-9.4-x86_64-kvm.qcow2 900m
-
-    # 10
-    # https://cloud.centos.org/centos/10-stream/x86_64/images/CentOS-Stream-GenericCloud-10-latest.x86_64.qcow2 900m
-
-    # https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/cloud/nocloud_alpine-3.19.1-x86_64-uefi-cloudinit-r0.qcow2 200m
-    # https://kali.download/cloud-images/current/kali-linux-2024.1-cloud-genericcloud-amd64.tar.xz 200m
-    # https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-Minimal-VM.x86_64-Cloud.qcow2 300m
-    # https://download.opensuse.org/distribution/leap/15.5/appliances/openSUSE-Leap-15.5-Minimal-VM.aarch64-Cloud.qcow2 300m
-    # https://mirror.fcix.net/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-40-1.14.qcow2 400m
-    # https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2 500m
-    # https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2 500m
-    # https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img 500m
-    # https://gentoo.osuosl.org/experimental/amd64/openstack/gentoo-openstack-amd64-systemd-latest.qcow2 800m
-
-    # openeuler 是 .qcow2.xz，要解压后才知道 qcow2 大小
-    if [ "$distro" = openeuler ]; then
-        echo 3GiB
-    elif size_bytes=$(get_http_file_size "$img"); then
-        # 缩小 btrfs 需要写 qcow2 ，实测写入后只多了 1M，因此不用特殊处理
-        echo "$(get_part_size_mb_for_file_size_b $size_bytes)MiB"
+# Rewrite actual package-manager URLs, including Debian/Ubuntu security suites.
+# RPM/zypper mirrorlist entries are disabled only in sections with a mapped baseurl.
+po0_emit_repo_section() {
+    if [ "$1" = 1 ]; then
+        printf '%s' "$2" | sed -E 's/^([[:space:]]*)(mirrorlist|metalink)([[:space:]]*=)/\1#\2\3/'
     else
-        # 如果没获取到文件大小
-        echo "Could not get cloud image size in http response." >&2
-        echo 2GiB
+        printf '%s' "$2"
     fi
 }
 
+po0_rewrite_repo_file() {
+    local file=$1 line url mapped section='' mapped_base=0 tmp_file
+    tmp_file=$file.po0.$$
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+        '['*)
+            po0_emit_repo_section "$mapped_base" "$section"
+            section=''
+            mapped_base=0
+            ;;
+        esac
+        for url in $(printf '%s\n' "$line" | grep -Eo 'https?://[^[:space:]]+' || true); do
+            mapped=$(po0_rewrite_url "$url") || return 1
+            case "$line" in
+            *baseurl*=*)
+                if [ "$mapped" != "$url" ] || [ "${url#"$PO0_MIRROR_BASE"/}" != "$url" ]; then
+                    mapped_base=1
+                    line=$(printf '%s\n' "$line" | sed -E 's/^[[:space:]]*#[[:space:]]*(baseurl[[:space:]]*=)/\1/')
+                fi
+                ;;
+            esac
+            # ash and bash support literal parameter replacement; no eval or URL regex.
+            line=${line//"$url"/"$mapped"}
+        done
+        section="$section$line
+"
+    done <"$file" >"$tmp_file"
+    po0_emit_repo_section "$mapped_base" "$section" >>"$tmp_file"
+    cat "$tmp_file" >"$file"
+    rm -f "$tmp_file"
+}
+
+po0_rewrite_target_repos() {
+    local os_dir=$1 file
+    for file in "$os_dir"/etc/apt/sources.list \
+        "$os_dir"/etc/apt/sources.list.d/*.list \
+        "$os_dir"/etc/apt/sources.list.d/*.sources \
+        "$os_dir"/etc/apt/mirrors/*.list \
+        "$os_dir"/etc/yum.repos.d/*.repo \
+        "$os_dir"/etc/zypp/repos.d/*.repo; do
+        [ -f "$file" ] || continue
+        po0_rewrite_repo_file "$file"
+    done
+}
+
+po0_install_chrony() {
+    local os_dir=$1
+    [ -n "$os_dir" ] || error_and_exit 'Missing chrony target root.'
+    [ -r "$PO0_ASSET_DIR/po0-chrony.sh" ] ||
+        error_and_exit 'Missing Po0 bundle: po0-chrony.sh'
+
+    # Package installation happens while target DNS and pseudo filesystems are
+    # available. Normal package-manager resolution handles time-daemon conflicts.
+    po0_rewrite_target_repos "$os_dir" || return
+    if [ -f "$os_dir/etc/alpine-release" ]; then
+        chroot "$os_dir" apk add chrony || return
+    elif [ -f "$os_dir/etc/debian_version" ]; then
+        chroot_apt_install "$os_dir" chrony || return
+    elif is_have_cmd_on_disk "$os_dir" dnf; then
+        chroot "$os_dir" dnf -y install chrony || return
+    elif is_have_cmd_on_disk "$os_dir" yum; then
+        chroot "$os_dir" yum -y install chrony || return
+    else
+        error_and_exit "No chrony package integration for $os_dir."
+    fi
+
+    # This helper changes the installed configuration and enables its service;
+    # it does not start a daemon inside the installation chroot.
+    sh "$PO0_ASSET_DIR/po0-chrony.sh" "$os_dir"
+}
+
 chroot_dnf() {
+    po0_rewrite_target_repos /os
     if is_have_cmd_on_disk /os/ dnf; then
         chroot /os/ dnf -y "$@"
     else
@@ -5022,6 +5300,7 @@ chroot_dnf() {
 
 chroot_apt_update() {
     local os_dir=$1
+    po0_rewrite_target_repos "$os_dir"
 
     current_hash=$(cat $os_dir/etc/apt/sources.list $os_dir/etc/apt/sources.list.d/*.sources 2>/dev/null | md5sum)
     if ! [ "$saved_hash" = "$current_hash" ]; then
@@ -5126,21 +5405,6 @@ del_exist_sysconfig_NetworkManager_config() {
     rm -rf $os_dir/etc/NetworkManager/system-connections/*.nmconnection
     rm -rf $os_dir/etc/sysconfig/network-scripts/ifcfg-*
 
-    # 1. 修复 cloud-init 添加了 IPV*_FAILURE_FATAL / may-fail=false
-    #    甲骨文 dhcpv6 获取不到 IP 将视为 fatal，原有的 ipv4 地址也会被删除
-    # 2. 修复 dhcpv6 下，ifcfg 添加了 IPV6_AUTOCONF=no 导致无法获取网关
-    # 3. 修复 dhcpv6 下，NM method=dhcp 导致无法获取网关
-    if false; then
-        ci_file=$os_dir/etc/cloud/cloud.cfg.d/99_fallback.cfg
-
-        insert_into_file $ci_file after '^runcmd:' <<EOF
-  - sed -i '/^IPV[46]_FAILURE_FATAL=/d' /etc/sysconfig/network-scripts/ifcfg-* || true
-  - sed -i '/^may-fail=/d' /etc/NetworkManager/system-connections/*.nmconnection || true
-  - for f in /etc/sysconfig/network-scripts/ifcfg-*; do grep -q '^DHCPV6C=yes' "\$f" && sed -i '/^IPV6_AUTOCONF=no/d' "\$f"; done
-  - sed -i 's/^method=dhcp/method=auto/' /etc/NetworkManager/system-connections/*.nmconnection || true
-  - systemctl is-enabled NetworkManager && systemctl restart NetworkManager || true
-EOF
-    fi
 }
 
 install_fnos() {
@@ -5328,6 +5592,7 @@ install_qcow_by_copy() {
     modify_el_ol() {
         info "Modify el ol"
         local os_dir=/os
+        po0_rewrite_target_repos "$os_dir"
 
         # resolv.conf
         cp_resolv_conf /os
@@ -5350,11 +5615,7 @@ install_qcow_by_copy() {
             # centos 7 eol 换源
             if [ -f /os/etc/yum.repos.d/CentOS-Base.repo ]; then
                 # 保持默认的 http 因为自带的 ssl 证书可能过期
-                if is_in_china; then
-                    mirror=mirror.nju.edu.cn/centos-vault
-                else
-                    mirror=vault.centos.org
-                fi
+                mirror=$PO0_MIRROR_HOST/centos-vault
                 sed -Ei -e 's,(mirrorlist=),#\1,' \
                     -e "s,#(baseurl=http://)mirror.centos.org,\1$mirror," /os/etc/yum.repos.d/CentOS-Base.repo
             fi
@@ -5378,6 +5639,8 @@ install_qcow_by_copy() {
         if fw_pkgs=$(get_ucode_firmware_pkgs) && [ -n "$fw_pkgs" ]; then
             chroot_dnf install $fw_pkgs
         fi
+
+        po0_install_chrony "$os_dir"
 
         # fstab 删除多余分区
         # almalinux/rocky 镜像有 boot 分区
@@ -5635,19 +5898,8 @@ EOF
         cp $os_dir/etc/default/grub $os_dir/etc/default/grub.orig
         echo 'GRUB_DISABLE_OS_PROBER=true' >>$os_dir/etc/default/grub
 
-        # 更改源
-        if is_in_china; then
-            # 22.04 使用 /etc/apt/sources.list
-            # 24.04 使用 /etc/apt/sources.list.d/ubuntu.sources
-            for file in $os_dir/etc/apt/sources.list $os_dir/etc/apt/sources.list.d/ubuntu.sources; do
-                if [ -f $file ]; then
-                    # cn.archive.ubuntu.com 不在国内还严重丢包
-                    # https://www.itdog.cn/ping/cn.archive.ubuntu.com
-                    sed -i 's/archive.ubuntu.com/mirror.nju.edu.cn/' $file # x64
-                    sed -i 's/ports.ubuntu.com/mirror.nju.edu.cn/' $file   # arm
-                fi
-            done
-        fi
+        # Both legacy sources.list and Deb822 ubuntu.sources, including security.
+        po0_rewrite_target_repos "$os_dir"
 
         # 避免 do-release-upgrade 时自动执行 dpkg-reconfigure grub-xx 但是 efi/biosgrub 分区不存在而导致报错
         # shellcheck disable=SC2046
@@ -5701,6 +5953,8 @@ EOF
         if fw_pkgs=$(get_ucode_firmware_pkgs) && [ -n "$fw_pkgs" ]; then
             chroot_apt_install $os_dir $fw_pkgs
         fi
+
+        po0_install_chrony "$os_dir"
 
         # 网络配置
         # 18.04+ netplan
@@ -6311,7 +6565,7 @@ create_win_set_netconf_script() {
     target=$1
     info "Create win netconf script"
 
-    if is_staticv4 || is_staticv6 || is_need_manual_set_dnsv6; then
+    if is_staticv4 || is_staticv6 || should_add_ipv4_static_dns || should_add_ipv6_static_dns; then
         get_netconf_to mac_addr
         echo "set mac_addr=$mac_addr" >$target
 
@@ -6322,7 +6576,6 @@ create_win_set_netconf_script() {
             cat <<EOF >>$target
 set ipv4_addr=$ipv4_addr
 set ipv4_gateway=$ipv4_gateway
-$(get_dns_list_for_win 4)
 EOF
         fi
 
@@ -6336,8 +6589,15 @@ set ipv6_gateway=$ipv6_gateway
 EOF
         fi
 
+        # 有 ipv4 但需设置 dns 的情况
+        if should_add_ipv4_static_dns; then
+            cat <<EOF >>$target
+$(get_dns_list_for_win 4)
+EOF
+        fi
+
         # 有 ipv6 但需设置 dns 的情况
-        if is_need_manual_set_dnsv6; then
+        if should_add_ipv6_static_dns; then
             cat <<EOF >>$target
 $(get_dns_list_for_win 6)
 EOF
@@ -6348,7 +6608,7 @@ EOF
 
     # 脚本还有关闭ipv6隐私id的功能，所以不能省略
     # 合并脚本
-    wget $confhome/windows-set-netconf.bat -O- >>$target
+    po0_copy_asset windows-set-netconf.bat - >>"$target"
     unix2dos $target
 }
 
@@ -6359,7 +6619,7 @@ create_win_change_rdp_port_script() {
     info "Create win change rdp port script"
 
     echo "set RdpPort=$rdp_port" >$target
-    wget $confhome/windows-change-rdp-port.bat -O- >>$target
+    po0_copy_asset windows-change-rdp-port.bat - >>"$target"
     unix2dos $target
 }
 
@@ -6375,11 +6635,7 @@ create_win_change_rdp_port_script() {
 # virt-what 可能会输出多行结果，因此用 grep
 
 get_aws_repo() {
-    if is_in_china >&2; then
         echo https://s3.cn-north-1.amazonaws.com.cn/ec2-windows-drivers-downloads-cn
-    else
-        echo https://s3.amazonaws.com/ec2-windows-drivers-downloads
-    fi
 }
 
 # 将 AC/SAC 版本号 转换为 LTSC 版本号
@@ -6593,11 +6849,7 @@ get_intel_download_url() {
     local id=$1
     local file_regex=$2
 
-    if is_in_china; then
         local url=https://www.intel.cn/content/www/cn/zh/download/$id.html
-    else
-        local url=https://www.intel.com/content/www/us/en/download/$id.html
-    fi
 
     # 将双引号替换成换行符，使每个链接占一行
     # intel 禁止了 wget 下载网页
@@ -6641,7 +6893,7 @@ install_windows() {
 
     # find_file_ignore_case 也在这个文件里面
     # shellcheck disable=SC1090
-    . <(wget -O- $confhome/windows-driver-utils.sh)
+    . "$PO0_ASSET_DIR/windows-driver-utils.sh"
 
     apk add wimlib
 
@@ -7566,11 +7818,7 @@ EOF
 
             local ROCKY_RELEASEVER=10
 
-            if is_in_china; then
                 local rocky_mirror=https://mirror.nju.edu.cn/rocky
-            else
-                local rocky_mirror=https://dl.rockylinux.org/pub/rocky
-            fi
             local rocky_mirror_os="$rocky_mirror/$ROCKY_RELEASEVER/AppStream/x86_64/os"
 
             primary_xml_gz=$(wget -O- "$rocky_mirror_os/repodata/repomd.xml" |
@@ -7644,11 +7892,7 @@ EOF
         # 路径是文件，应该不会弹出 anubis 验证？
         if [ "$dir" = stable-virtio ]; then
             if ! dir=$(get_latest_virtio_dir "$baseurl"); then
-                if is_any_ipv4_has_internet &&
-                    mirror_baseurl=https://files.m.daocloud.io/$(echo "$baseurl" | sed -E 's,^https?://,,i') &&
-                    dir=$(get_latest_virtio_dir "$mirror_baseurl"); then
-                    baseurl=$mirror_baseurl
-                elif [ "$arch_wim" = x86 ] || [ "$arch_wim" = x86_64 ]; then
+                if [ "$arch_wim" = x86 ] || [ "$arch_wim" = x86_64 ]; then
                     add_driver_virtio_from_rpm "$@"
                     return
                 else
@@ -8165,7 +8409,7 @@ EOF
 
     # 修改应答文件
     apk add xmlstarlet
-    download $confhome/windows.xml /tmp/autounattend.xml
+    po0_copy_asset windows.xml /tmp/autounattend.xml
     locale=$(get_selected_image_prop 'Default Language')
     use_default_rdp_port=$(is_need_change_rdp_port && echo false || echo true)
 
@@ -8312,7 +8556,7 @@ EOF
     startnet_cmd=$(get_path_in_correct_case /wim/Windows/System32/startnet.cmd)
     winpeshl_ini=$(get_path_in_correct_case /wim/Windows/System32/winpeshl.ini)
 
-    download $confhome/windows-setup.bat $startnet_cmd
+    po0_copy_asset windows-setup.bat "$startnet_cmd"
     # dism 手动释放镜像时用
     # sed -i "s|@image_name@|$image_name|" "$startnet.cmd"
 
@@ -8391,7 +8635,7 @@ EOF
         if false; then
             # 使用 autounattend.xml
             # win7 在此阶段找不到网卡
-            download $confhome/windows-resize.bat /wim/windows-resize.bat
+            po0_copy_asset windows-resize.bat /wim/windows-resize.bat
             for ethx in $(get_eths); do
                 create_win_set_netconf_script /wim/windows-set-netconf-$ethx.bat
             done
@@ -8453,41 +8697,13 @@ refind_main_disk() {
 }
 
 sync_time() {
-    if false; then
-        # arm要手动从硬件同步时间，避免访问https出错
-        # do 机器第二次运行会报错
-        hwclock -s || true
-    fi
-
-    # ntp 时间差太多会无法同步？
-    # http 时间可能不准确，毕竟不是专门的时间服务器
-    #      也有可能没有 date header?
-    method=http
-
-    case "$method" in
-    ntp)
-        if is_in_china; then
-            ntp_server=ntp.aliyun.com
-        else
-            ntp_server=pool.ntp.org
-        fi
-        # -d[d]   Verbose
-        # -n      Run in foreground
-        # -q      Quit after clock is set
-        # -p      PEER
-        ntpd -d -n -q -p "$ntp_server"
-        ;;
-    http)
-        url="$(grep -m1 ^http /etc/apk/repositories)/$(uname -m)/APKINDEX.tar.gz"
-        # 可能有多行，取第一行
-        date_header=$(wget -S --no-check-certificate --spider "$url" 2>&1 | grep -m1 '^  Date:')
-        # gnu date 不支持 -D
-        busybox date -u -D "  Date: %a, %d %b %Y %H:%M:%S GMT" -s "$date_header"
-        ;;
-    esac
-
-    # 重启时 alpine 会自动写入到硬件时钟，因此这里跳过
-    # hwclock -w
+    # Bootstrap the Alpine installer clock using the same private time service.
+    # The caller tolerates failure; do not hold installation indefinitely if
+    # the NTP service is temporarily unavailable. Persistent targets use chrony.
+    timeout 30 ntpd -d -n -q \
+        -p time1.tencentyun.com -p time2.tencentyun.com \
+        -p time3.tencentyun.com -p time4.tencentyun.com \
+        -p time5.tencentyun.com
 }
 
 is_ubuntu_lts() {
@@ -8623,101 +8839,6 @@ set_max_sectors_kb_for_tencent_cloud_persist() {
     fi
 }
 
-install_redhat_ubuntu() {
-    info "Download iso installer"
-
-    # 安装 grub2
-    if is_efi; then
-        # 注意低版本的grub无法启动f38 arm的内核
-        # https://forums.fedoraforum.org/showthread.php?330104-aarch64-pxeboot-vmlinuz-file-format-changed-broke-PXE-installs
-        apk add grub-efi efibootmgr
-        grub-install --efi-directory=/os/boot/efi --boot-directory=/os/boot
-    else
-        apk add grub-bios
-        grub-install --boot-directory=/os/boot /dev/$xda
-    fi
-
-    # 重新整理 extra，因为grub会处理掉引号，要重新添加引号
-    extra_cmdline=''
-    for var in $(grep -o '\bextra_[^ ]*' /proc/cmdline | xargs); do
-        if [[ "$var" = "extra_main_disk=*" ]]; then
-            # 重新记录主硬盘
-            refind_main_disk
-            extra_cmdline="$extra_cmdline extra_main_disk=$main_disk"
-        else
-            extra_cmdline="$extra_cmdline $(echo $var | sed -E "s/(extra_[^=]*)=(.*)/\1='\2'/")"
-        fi
-    done
-
-    # 安装红帽系时，只有最后一个有安装界面显示
-    # https://anaconda-installer.readthedocs.io/en/latest/boot-options.html#console
-    console_cmdline=$(get_ttys console=)
-    grub_cfg=/os/boot/grub/grub.cfg
-
-    # 新版grub不区分linux/linuxefi
-    # shellcheck disable=SC2154
-    if [ "$distro" = "ubuntu" ]; then
-        download $iso /os/installer/ubuntu.iso
-        mkdir -p /iso
-        mount -o ro /os/installer/ubuntu.iso /iso
-
-        # 内核风味
-        kernel=$(get_ubuntu_kernel_flavor)
-
-        # 要安装的版本
-        # https://canonical-subiquity.readthedocs-hosted.com/en/latest/reference/autoinstall-reference.html#id
-        # 20.04 不能选择 minimal ，也没有 install-sources.yaml
-        source_id=
-        if [ -f /iso/casper/install-sources.yaml ]; then
-            ids=$(grep id: /iso/casper/install-sources.yaml | awk '{print $2}')
-            if [ "$(echo "$ids" | wc -l)" = 1 ]; then
-                source_id=$ids
-            else
-                [ "$minimal" = 1 ] && v= || v=-v
-                source_id=$(echo "$ids" | grep $v '\-minimal')
-
-                if [ "$(echo "$source_id" | wc -l)" -gt 1 ]; then
-                    error_and_exit "find multi source id."
-                fi
-            fi
-        fi
-
-        # 正常写法应该是 ds="nocloud-net;s=https://xxx/" 但是甲骨文云的ds更优先，自己的ds根本无访问记录
-        # $seed 是 https://xxx/
-        cat <<EOF >$grub_cfg
-        set timeout=5
-        menuentry "reinstall" {
-            # https://bugs.launchpad.net/ubuntu/+source/grub2/+bug/1851311
-            # rmmod tpm
-            insmod all_video
-            insmod search
-            insmod loopback
-            search --no-floppy --label --set=root installer
-            loopback loop /ubuntu.iso
-            linux (loop)/casper/vmlinuz iso-scan/filename=/ubuntu.iso autoinstall noprompt noeject cloud-config-url=$ks $extra_cmdline extra_kernel=$kernel extra_source_id=$source_id --- $console_cmdline
-            initrd (loop)/casper/initrd
-        }
-EOF
-    else
-        download $vmlinuz /os/vmlinuz
-        download $initrd /os/initrd.img
-        download $squashfs /os/installer/install.img
-
-        cat <<EOF >$grub_cfg
-        set timeout=5
-        menuentry "reinstall" {
-            insmod all_video
-            insmod search
-            search --no-floppy --label --set=root os
-            linux /vmlinuz inst.stage2=hd:LABEL=installer:/install.img inst.ks=$ks $extra_cmdline $console_cmdline
-            initrd /initrd.img
-        }
-EOF
-    fi
-
-    cat "$grub_cfg"
-}
-
 trans() {
     info "start trans"
 
@@ -8743,7 +8864,6 @@ trans() {
     set_max_sectors_kb_for_tencent_cloud_liveos
 
     if [ "$distro" != "alpine" ]; then
-        setup_web_if_enough_ram
         # util-linux 包含 lsblk
         # util-linux 可自动探测 mount 格式
         apk add util-linux
@@ -8757,11 +8877,14 @@ trans() {
         cloud_image=1
     fi
 
+    # Reject stale/missing rsync metadata before create_part can erase the disk.
+    po0_prepare_rsync_cloud || return
+
     if is_use_cloud_image; then
         case "$img_type" in
         qemu)
-            create_part
-            download_qcow
+            create_part || return
+            download_qcow || return
             case "$distro" in
             centos | almalinux | rocky | oracle | redhat | anolis | opencloudos | openeuler)
                 # 这几个系统云镜像系统盘是8~9g xfs，而我们的目标是能在5g硬盘上运行，因此改成复制系统文件
@@ -8826,7 +8949,6 @@ trans() {
             create_part
             mount_part_for_iso_installer
             case "$distro" in
-            centos | almalinux | rocky | fedora | ubuntu | redhat) install_redhat_ubuntu ;;
             windows) install_windows ;;
             esac
             ;;
@@ -8846,8 +8968,6 @@ trans() {
     fi
 
     info 'done'
-    # 让 web 输出全部内容
-    sleep 5
 }
 
 # 脚本入口
@@ -8872,13 +8992,9 @@ rm -f /etc/runlevels/default/local
 extract_env_from_cmdline
 
 # 带参数运行部分
-# 重新下载并 exec 运行新脚本
+# A running installer cannot replace one file from a versioned bundle.
 if [ "$1" = "update" ]; then
-    info 'update script'
-    # shellcheck disable=SC2154
-    wget -O /trans.sh "$confhome/trans.sh"
-    chmod +x /trans.sh
-    exec /trans.sh
+    error_and_exit 'Live script updates are disabled; prepare a new complete Po0 bundle before reboot.'
 elif [ "$1" = "alpine" ]; then
     info 'switch to alpine'
     distro=alpine

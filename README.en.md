@@ -1,27 +1,740 @@
+<!-- markdownlint-disable MD028 MD033 MD045 -->
+
 # reinstall-Po0
 
-A Po0-specific fork of [bin456789/reinstall](https://github.com/bin456789/reinstall), retaining multiple OS choices and the GPL-3.0 license. See the [Chinese guide](README.md) for configuration, observed resource availability, and limitations.
+[![Po0 checks](https://github.com/mihomoQ/reinstall-Po0/actions/workflows/run_reinstall.yml/badge.svg)](https://github.com/mihomoQ/reinstall-Po0/actions/workflows/run_reinstall.yml)
 
-Debian 12, Ubuntu 24.04.5, AlmaLinux 9.8 and Ubuntu 22.04.5 have completed real disk reinstalls, first boot, public-key SSH, internal package-source refresh and chrony synchronization on one Po0 x86_64/BIOS VM. Other targets and hardware remain unverified. See the [current live-test record](docs/live-test-2026-10-28.md).
+One-click VPS OS reinstallation for Po0 [中文](README.md)
 
-- No public geolocation or Internet-connectivity probes, and no address/route deletion based on them.
-- Private DHCP networking, original DNS fallback, and internal mirror mappings.
-- Package repositories stay internal. QCOW2 cloud images prefer the internal mirror, then use bounded rsync failover through bundled campus endpoints. MirrorZ's HTTP 302 service is not a runtime dependency or a rsync redirector.
-- Chrony with Tencent's five internal time servers on integrated Debian/Kali, Ubuntu/RPM cloud-image and Alpine paths. The same configuration helper has been live-tested on the installed Debian 12 server; Alpine and other unlisted chrony targets retain isolated-test coverage only.
-- SSH/screen installation logs only; no Web log service or Web port options.
-- Version-matched local helpers and Debian preseed embedded into initrd. Transfer the complete source directory or bundle, not a single script.
-- Debian/Ubuntu APT (including security) and mapped RPM repositories are adapted. OS menu retention is not a claim that every resource or installation path works.
+Based on [bin456789/reinstall](https://github.com/bin456789/reinstall), retaining the upstream documentation structure and GPL-3.0 license. This fork is for Linux source systems on Po0: private DHCP networking, internal package mirrors, cloud-image rsync fallback, and SSH installation logs.
 
-Build the portable bundle on a computer with Python:
+## Introduction
 
-```sh
+- Retains the upstream Linux distribution choices and Linux-to-Windows target entrypoint. The [version table](#system-requirements) distinguishes accepted options from complete Po0 installation tests.
+- Runs from **Linux only**. Windows/Cygwin source bootstrap has been removed.
+- Keeps the private address, gateway and DNS supplied by DHCP; the public mapped IP is not assigned to the NIC. Missing DHCP DNS can fall back to resolvers saved from the original system.
+- Does not use public Internet or geolocation probes, and does not remove addresses or routes because public ports 80/443 are blocked.
+- Uses partition-table IDs to identify the installation disk and retains boot-mode and disk checks.
+- Retains BIOS/EFI and architecture handling; live tests cover one x86_64/BIOS Po0 instance.
+- Uses internal package mirrors. Cloud images prefer the internal mirror and fall back to bundled rsync endpoints on port 873 when available.
+- Carries version-matched local helper files and installation configuration in initrd. Transfer the complete bundle, not only `reinstall.sh`.
+- Uses SSH/screen installation logs and Tencent internal chrony time sources on the integrated Linux targets.
+
+Support the original upstream author:
+[![Donate](https://img.shields.io/badge/Donate-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA)](https://github.com/sponsors/bin456789)
+
+[![Sponsors](https://raw.githubusercontent.com/bin456789/sponsors/refs/heads/master/sponsors.svg)](https://github.com/sponsors/bin456789)
+
+### Feedback
+
+[![GitHub Issues](https://img.shields.io/badge/GitHub-%23121011.svg?style=for-the-badge&logo=github&logoColor=white)](https://github.com/mihomoQ/reinstall-Po0/issues)
+Upstream community: [![Telegram Group](https://img.shields.io/badge/Telegram-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/reinstall_os)
+
+## Quick Start
+
+- [Download](#download-current-system-is--linux)
+- [Feature 1. One-click reinstallation to Linux](#feature-1-install--linux)
+- [Feature 2. One-click DD Raw image to hard disk](#feature-2-dd-raw-image-to-hard-disk)
+- [Feature 3. One-click reboot to Alpine Live OS](#feature-3-reboot-to--alpine-live-os)
+- [Feature 4. One-click reboot to netboot.xyz](#feature-4-reboot-to--netbootxyz)
+- [Feature 5. One-click reinstallation to Windows](#feature-5-install--windows-iso)
+- [Cancel the reinstallation](#cancel-the-reinstallation)
+
+## System Requirements
+
+Run the script as root from a Linux source system. Complete installations have been verified on one Po0 x86_64/BIOS instance with **2 vCPU, about 2 GiB RAM and a 20 GiB system disk**.
+
+### Verified Po0 targets
+
+| Command | Actual installed system | Complete installation result |
+|---|---|---|
+| `bash reinstall.sh debian 12` | Debian 12 | Disk reinstall, first boot, SSH, internal APT and chrony passed |
+| `bash reinstall.sh ubuntu 22.04` | Ubuntu 22.04.5 LTS | Disk reinstall, first boot, SSH, internal APT and chrony passed |
+| `bash reinstall.sh ubuntu 24.04` | Ubuntu 24.04.5 LTS | Disk reinstall, first boot, SSH, internal APT and chrony passed |
+| `bash reinstall.sh almalinux 9` | AlmaLinux 9.8 | Disk reinstall, first boot, SSH, enabled internal DNF repositories and chrony passed |
+
+The `almalinux 9` command follows the mirror's current major-version image; it does not pin 9.5. Use `ubuntu 22.04` or `ubuntu 24.04`, not the point-release strings shown above. The five-installation sequence also exercised all four systems as source systems. See the [live-test record](docs/live-test-2026-10-28.md).
+
+### Retained version options and upstream resource references
+
+The following versions are accepted by the current script. **Acceptance by the argument parser does not confirm that a complete Po0 installation works.** Except for the four targets above, complete installations remain unverified. Resource availability alone is not an installation test.
+
+RAM/disk values below are inherited **upstream reference values**, not validated Po0 minima. Plain cloud images also require temporary disk space. Compressed cloud images require RAM for the archive **plus 512 MiB**, sufficient RAM-filesystem space, and at most 256 MiB of xz/zstd decoder memory. Compressed HTTP images require Content-Length. Plain HTTP images without a known size use a 2 GiB staging-partition fallback.
+
+| System / command name | Accepted versions | Upstream RAM reference | Upstream disk reference | Po0 verification |
+|---|---|---|---|---|
+| Alpine `alpine` | 3.21, 3.22, 3.23, 3.24 | 256 MB | 1 GB | 3.24 tested as an intermediate environment; final target unverified |
+| Debian `debian` | 9, 10, 11, 12, 13 | 256 MB | 1–1.5 GB ^ | 12 verified; other versions unverified, 9–11 use ELTS paths |
+| Kali `kali` | last-snapshot, rolling | 256 MB | 1–1.5 GB ^ | Unverified |
+| Ubuntu `ubuntu` | 18.04, 20.04, 22.04, 24.04, 26.04, 26.10 | 512 MB * | 2 GB | 22.04 and 24.04 verified; others unverified |
+| Anolis `anolis` | 7, 8, 23 | 512 MB * | 5 GB | Unverified |
+| AlmaLinux `almalinux` | 8, 9, 10 | 512 MB * | 5 GB | 9 verified as 9.8; 8 and 10 unverified |
+| Rocky `rocky` | 8, 9, 10 | 512 MB * | 5 GB | Unverified; Rocky 9 image selection was tested |
+| Oracle Linux `oracle` | 8, 9, 10 | 512 MB * | 5 GB | Unverified |
+| RHEL / compatible `redhat` | No version argument; requires `--img` QCOW2 URL | 512 MB * | 5 GB | Unverified |
+| OpenCloudOS `opencloudos` | 8, 9, 23 (Stream) | 512 MB * | 5 GB | Unverified |
+| CentOS Stream `centos` | 9, 10 | 512 MB * | 5 GB | Unverified |
+| Fedora `fedora` | 43, 44 | 512 MB * | 5 GB | Unverified |
+| openEuler `openeuler` | 20.03, 22.03, 24.03, 26.09 | 512 MB * | 5 GB | Unverified |
+| openSUSE `opensuse` | 16.0, tumbleweed | 512 MB * | 5 GB | Unverified |
+| NixOS `nixos` | 26.05 | 512 MB | 5 GB | Unverified |
+| Arch Linux / ARM `arch` | Rolling; no version argument | 512 MB | 5 GB | Unverified |
+| Gentoo `gentoo` | Rolling; no version argument | 512 MB | 5 GB | Internal resources and isolated source tests only |
+| AOSC OS `aosc` | Rolling; no version argument | 512 MB | 5 GB | Unverified |
+| fnOS / FygoOS `fnos` / `fygoos` | 1 | 512 MB | 10 GB | Unverified |
+| Windows via `dd` | User-supplied image | 512 MB | Depends on image | Unverified |
+| Windows ISO `windows` | Vista–11; Server 2008–2025 and other editions listed below | 512 MB for older releases; 1 GB for Windows 10/11 and Server 2016+ | 25 GB | Unverified; exceeds the test VM's 20 GiB disk |
+
+`centos 7` is also retained as a historical compatibility argument, outside the advertised CentOS Stream choices; it is not a verified Po0 target.
+
+\* Cloud-image installation, not the removed legacy ISO installer.
+
+^ Upstream reference: either 256 MB RAM + 1.5 GB disk, or 512 MB RAM + 1 GB disk.
+
+> [!WARNING]
+>
+> Upstream also contains dedicated-server and PC paths; these are outside this fork's Po0 verification.
+>
+> If you have IPMI or a USB installation medium available, consider that installation method instead.
+
+> [!WARNING]
+>
+> ❌ This script does not support OpenVZ or LXC virtual machines.
+>
+> Please use <https://github.com/LloydAsp/OsMutation> instead.
+
+## Download (Current system is <img width="20" height="20" src="https://www.kernel.org/theme/images/logos/favicon.png" /> Linux)
+
+Download the **complete repository** on a computer that can access GitHub. The Po0 server does not need direct GitHub HTTP/HTTPS access:
+
+```bash
+git clone https://github.com/mihomoQ/reinstall-Po0.git
+cd reinstall-Po0
 python3 tools/build-bundle.py
+scp dist/reinstall-Po0.tar.gz root@YOUR_SERVER:/root/
 ```
 
-Transfer `dist/reinstall-Po0.tar.gz` to the server using SCP/SFTP and extract it. The bundle contains checksums and excludes private operator configuration. Follow README.md before preparing any installation; installation erases the selected disk after reboot.
+Replace `YOUR_SERVER` with your server address. On a computer where Python is named `python`, use `python tools/build-bundle.py`. Alternatively, download the repository ZIP from GitHub and transfer its entire extracted directory using SCP/SFTP.
 
-Observed internal resources include Debian 12 netboot, Alpine 3.24 netboot, and AlmaLinux 9 GenericCloud. Missing Ubuntu/Debian/Rocky cloud-image files can fall back to rsync. A complete Ubuntu 24.04 image has been downloaded and type/hash-checked on the test VM; the Ubuntu and AlmaLinux cloud-image paths have also completed full reinstalls and first-boot checks.
+On the Po0 server:
 
-Preparation for both HTTP and rsync reads image metadata and bounded SHA256 manifests; the installer transfers the complete image once. It checks size, any available pinned manifest hash, and explicit QCOW2 structure before using the file. Without a matching manifest, available size and structural checks still apply, with a visible notice. Mirror-provided checksums do not authenticate publisher identity. Plain images are downloaded after repartitioning, so a failure can leave the old system erased. Compressed images are cached in installer RAM, fully counted before repartitioning, and expanded from that cache without a second transfer. They need RAM for the archive plus 512 MiB of headroom, sufficient RAM-filesystem space, and no more than 256 MiB of xz/zstd decoder memory; insufficient resources stop before partitioning. Legacy `--installer` is rejected; its disabled implementation and dedicated assets have been removed. The installer runs from Linux only; Windows/Cygwin host bootstrap has been removed. Windows remains an optional installation target with unverified drivers and third-party resources.
+```bash
+cd /root
+tar xzf reinstall-Po0.tar.gz
+cd reinstall-Po0
+sha256sum -c SHA256SUMS
+```
 
-Initial source baseline: `01e1e259968c3b9c5ee5d6aea7253392b5eafe92`. Upstream was merged through `54fae2067557b3c0ca49e7c9ce03bca63c793f8c` on 2026-10-28, including installation messages, network diagnostics and DNS configuration interfaces. Po0 keeps DHCP and saved-resolver fallback without public connectivity probes. Original documentation is retained in `README.upstream.md` and `README.upstream.en.md` for reference; upstream Web logging and single-file download instructions do not apply here.
+The bundle includes the helper scripts, configuration templates and checksums, and excludes private operator configuration. It is not sufficient to download only `reinstall.sh`. Package repositories default to `http://mirrors.tencentyun.com`; public ports 80/443 are not required for obtaining the script by SCP/SFTP.
+
+## Usage
+
+Run all commands below from the complete bundle directory on **Linux**, as root:
+
+```bash
+bash reinstall.sh debian 12 --ssh-key /root/.ssh/authorized_keys
+```
+
+The preparation script does not trigger the first reboot. Review its output, then reboot to start installation. Use `reset` before reboot to cancel. The four verified target commands appear in [System Requirements](#system-requirements); the remaining feature documentation describes retained entrypoints, not additional live-test coverage.
+
+### Feature 1: Install <img width="16" height="16" src="https://www.kernel.org/theme/images/logos/favicon.png" /> Linux
+
+> [!CAUTION]
+>
+> This feature will erase **the entire hard disk** of the current system (including other partitions)!
+>
+> If the script was run by mistake, you can run `bash reinstall.sh reset` before rebooting to cancel the reinstallation operation.
+
+- The script prompts for a username and password. If left blank, will use `root` and random password.
+- If no version is specified, the script selects the last version in its built-in list, not necessarily a Po0-tested version. Specify a version from the verified table for a tested path.
+- Reclaims the temporary installation partition and expands the target filesystem where the selected installation path supports it.
+- Retains upstream kernel selection and necessary Tencent disk handling. The vendor CPU/IRQ/RPS/XPS tuning suite is not copied into the new system.
+- When installing Red Hat, you must provide the `qcow2` image link obtained from <https://access.redhat.com/downloads/content/rhel>. You can also install `qcow2` of other RHEL-based OS, such as `Alibaba Cloud Linux` and `TencentOS Server`.
+- After reinstallation, if you need to change the SSH port or switch to key-based login, make sure to also modify the files inside `/etc/ssh/sshd_config.d/`.
+- Installation can add or replace required kernel/boot packages, but does not perform a general upgrade of every package. Update the installed system according to your maintenance policy.
+- The username, password, and key configured during the installation of fnOS/FygoOS are only used to log in via SSH to view logs during installation, and will not be applied to the new system. After installation, you need to go to the admin panel at <http://IP:5666> to create a user and enable SSH.
+
+Choose one system and one version from this syntax list; `|` means alternatives and is not a shell command to paste literally.
+
+```text
+bash reinstall.sh anolis      7|8|23
+                  rocky       8|9|10
+                  oracle      8|9|10
+                  almalinux   8|9|10
+                  opencloudos 8|9|23
+                  centos      9|10
+                  fnos        1
+                  fygoos      1
+                  nixos       26.05
+                  fedora      43|44
+                  debian      9|10|11|12|13
+                  opensuse    16.0|tumbleweed
+                  alpine      3.21|3.22|3.23|3.24
+                  kali        last-snapshot|rolling
+                  openeuler   20.03|22.03|24.03|26.09
+                  ubuntu      18.04|20.04|22.04|24.04|26.04|26.10 [--minimal]
+                  arch
+                  gentoo
+                  aosc
+                  redhat      --img="http://YOUR_MIRROR:PORT/rhel.qcow2"
+```
+
+#### Optional Parameters
+
+- `--username USERNAME` Set the username
+- `--password PASSWORD` Set the password
+- `--ssh-key KEY` Set up SSH login public key, [formatted as follows](#--ssh-key). When using public key, password is empty.
+- `--ssh-port PORT` Change the SSH port
+- `--frpc-config PATH` Add frpc for intranet tunneling. Parameter can be local filepath or HTTP URL of the configuration file.
+- `--no-cloud-kernel` Avoid using cloud kernel to prevent black or glitch screens on certain machines; applicable to Debian, Ubuntu, Alpine and openSUSE.
+- `--hold 1` Reboot only into install environment, without running installer, only for SSH connect to test network connection.
+- `--hold 2` Prevent reboot after installation completes, allowing SSH login to modify system content; the system is mounted at `/target` for Debian/Kali and `/os` for other distros.
+
+> [!TIP]
+>
+> Installation logs use SSH/screen only; there is no Web log service. Provider console/VNC or a serial console can also show boot diagnostics.
+>
+> If the installation environment and its network remain running, SSH can be used for diagnosis or manual recovery; SSH cannot recover a machine that has failed to boot or lost networking.
+>
+> If the target system is not Debian/Kali, run `/trans.sh alpine` can automatically recover to Alpine Linux.
+
+<details>
+
+<summary>Cloud-image option and removed legacy installers</summary>
+
+Debian's optional cloud-image path is retained, but has not completed a Po0 whole-system test:
+
+```bash
+bash reinstall.sh debian 12 --ci
+```
+
+The old Ubuntu/RHEL-family ISO `--installer` mode is rejected before boot changes. Its disabled implementation and dedicated files have been removed. The normal Ubuntu, AlmaLinux and other cloud-image targets remain available.
+
+</details>
+
+### Feature 2: DD RAW image to hard disk
+
+This entrypoint is retained but not covered by the Po0 full-installation tests. The image and any remote NoCloud files must be reachable from Po0. Rsync URLs are supported for QCOW2 cloud-image installation, not raw DD streams. `YOUR_MIRROR:PORT` below is a placeholder for a service you control; the script does not make that service available.
+
+> [!CAUTION]
+>
+> This feature will erase **the entire hard disk** of the current system (including other partitions)!
+>
+> If the script was run by mistake, you can run `bash reinstall.sh reset` before rebooting to cancel the reinstallation operation.
+
+- Supports `raw` and fixed-size `vhd` image formats. Either uncompressed or compressed as `.gz`, `.xz`, `.zst`, `.tar`, `.tar.gz`, `.tar.xz`, `.tar.zst`.
+- When deploy a Windows image, the system disk will be automatically expanded, and machines with a static IP will have their IP configured, and may take a few minutes after the first boot for the configuration to take effect.
+- When deploy a Linux image, will **NOT** modify any contents of the image.
+- The script prompts for a username and password for SSH to view logs during the installation. If left blank, will use `root` and random password.
+
+```bash
+bash reinstall.sh dd --img "http://YOUR_MIRROR:PORT/image.xz"
+```
+
+#### Optional Parameters
+
+- `--username USERNAME` Set username (for log observation during installation)
+- `--password PASSWORD` Set Password (for log observation during installation)
+- `--ssh-key KEY` Set up SSH login public key (for log observation during installation), [formatted as follows](#--ssh-key). When using public key, password is empty.
+- `--ssh-port PORT` Change SSH port (for log observation during installation)
+- `--rdp-port PORT` Change RDP port (DD Windows only)
+- `--allow-ping` Configure Windows Firewall to Allow Ping Responses (DD Windows only)
+- `--frpc-config PATH` Add frpc for intranet tunneling (DD Windows only). Parameter can be local filepath or HTTP URL of the configuration file.
+- `--cloud-data PATH_OR_URL` Inject cloud-init NoCloud configuration into the DD'd Linux image (DD Linux only)
+- `--hold 1` Reboot only into install environment, without running installer, only for SSH connect to test network connection.
+- `--hold 2` Prevent reboot after the DD process finishes. For SSH login to modify system content. The Windows system will be mounted at `/os`, but Linux systems will **NOT** be automatically mounted.
+
+> [!TIP]
+>
+> `--cloud-data` accepts a local directory path or an HTTP base URL. The directory must contain a `user-data` file; `meta-data` and `network-config` are optional:
+>
+> ```bash
+> seed/
+> ├── user-data      # required
+> ├── meta-data      # optional
+> └── network-config # optional
+> ```
+>
+> ```bash
+> # Local directory
+> bash reinstall.sh dd --img "http://YOUR_MIRROR:PORT/image.xz" --cloud-data /path/to/seed/
+> # HTTP directory
+> bash reinstall.sh dd --img "http://YOUR_MIRROR:PORT/image.xz" --cloud-data "http://YOUR_MIRROR:PORT/seed/"
+> ```
+
+> [!TIP]
+>
+> Installation logs use SSH/screen only; there is no Web log service. Provider console/VNC or a serial console can also show boot diagnostics.
+>
+> If the installation environment and its network remain running, SSH can be used for diagnosis or manual recovery; SSH cannot recover a machine that has failed to boot or lost networking.
+>
+> Or Run `/trans.sh alpine` to automatically recover to Alpine Linux.
+
+### Feature 3: Reboot to <img width="16" height="16" src="https://www.alpinelinux.org/alpine-logo.ico" /> Alpine Live OS
+
+Alpine 3.24 has booted successfully as the intermediate environment for the verified cloud-image installations. Installing Alpine as the final target is a separate path and has not been fully tested.
+
+- You can use SSH to backup/restore disk, manually perform DD operations, partition modifications, manual Alpine installation, and other operations.
+- The script prompts for a username and password. If left blank, will use `root` and random password.
+
+> [!TIP]
+>
+> Although the script being run is `reinstall`, this feature **does not** delete any data or perform an automatic reinstallation; manual user operation is required.
+>
+> If the user does not damage the original system during manual operation, rebooting will return to the original system.
+
+```bash
+bash reinstall.sh alpine --hold 1
+```
+
+#### Optional Parameters
+
+- `--username USERNAME` Set username
+- `--password PASSWORD` Set password
+- `--ssh-key KEY` Set up SSH login public key, [formatted as follows](#--ssh-key). When using public key, password is empty.
+- `--ssh-port PORT` Change SSH port
+- `--frpc-config PATH` Add frpc for intranet tunneling. Parameter can be local filepath or HTTP URL of the configuration file.
+
+### Feature 4: Reboot to <img width="16" height="16" src="https://netboot.xyz/img/favicon.ico" /> netboot.xyz
+
+This entrypoint is retained but unverified on Po0. Its boot files and menus depend on external resources that may require public HTTP/HTTPS; internal package mirrors and the cloud-image rsync fallback do not automatically cover netboot.xyz.
+
+- Can manually install [more systems](https://github.com/netbootxyz/netboot.xyz?tab=readme-ov-file#what-operating-systems-are-currently-available-on-netbootxyz) using vendor backend VNC.
+
+> [!TIP]
+>
+> Although the script being run is `reinstall`, this feature **does not** delete any data or perform an automatic reinstallation; manual user operation is required.
+>
+> If the user does not damage the original system during manual operation, rebooting will return to the original system.
+
+```bash
+bash reinstall.sh netboot.xyz
+```
+
+![netboot.xyz](https://netboot.xyz/images/netboot.xyz.gif)
+
+### Feature 5: Install <img width="16" height="16" src="https://blogs.windows.com/wp-content/uploads/prod/2022/09/cropped-Windows11IconTransparent512-32x32.png" /> Windows ISO
+
+Windows remains an installation **target from Linux**, not a supported source system. This path has not completed Po0 installation tests. The upstream ISO search and driver downloads below can require public HTTP/HTTPS; provide reachable resources or explicit mirror mappings before using it. The tested VM has a 20 GiB disk, below the upstream 25 GB Windows ISO reference requirement.
+
+The edition lists, driver references and screenshots below are retained from upstream and are not Po0 compatibility results.
+
+![Windows Installation](https://github.com/bin456789/reinstall/assets/7548515/07c1aea2-1ce3-4967-904f-aaf9d6eec3f7)
+
+> [!CAUTION]
+>
+> This feature will erase **the entire hard disk** of the current system (including other partitions)!
+>
+> If the script was run by mistake, you can run `bash reinstall.sh reset` before rebooting to cancel the reinstallation operation.
+
+- The script prompts for a username and password. If left blank, will use `administrator` and random password.
+- In a few languages, the system administrator account is not `administrator`. [Details](https://learn.microsoft.com/archive/technet-wiki/13813.localized-names-for-administrator-account-in-windows#list-of-languages-that-localize-the-administrator-account-name)
+- If remote login fails, try adding `.\` before the username, for example, `.\administrator`.
+- The machine with a static IP will automatically configure the IP. It may take a few minutes to take effect on the first boot.
+- Supports ISO images in any language.
+- Automatically bypassing Windows 11 hardware requirements.
+
+#### Retained Target Systems
+
+- Windows (Vista ~ 11)
+- Windows Server (2008 ~ 2025)
+  - Windows Server Essentials
+  - Windows Server (Semi) Annual Channel
+  - Hyper-V Server
+  - Azure Local (Azure Stack HCI)
+
+#### Method 1: Let the Script Automatically Search for ISO
+
+Automatic search is retained as an upstream option, but normally cannot complete when its public HTTPS sources are blocked. Method 2 with a reachable ISO URL is required in that case; automatic driver downloads may still need local files or mappings.
+
+- The script will search for ISOs from <https://ntriver.org/download-windows-office>, a site that collects official ISOs.
+- Searches for 64-bit system images by default, unless `--bit 32` is specified.
+
+```bash
+bash reinstall.sh windows \
+     --image-name "Windows 11 Enterprise LTSC 2024" \
+     --lang zh-cn
+```
+
+<details>
+<summary>--image-name list</summary>
+
+The following editions support automatic ISO search. For other editions, please use Method 2 to manually specify the ISO link for installation.
+
+```text
+Windows Vista Starter
+Windows Vista HomeBasic
+Windows Vista HomePremium
+Windows Vista Business
+Windows Vista Ultimate
+Windows Vista Enterprise
+
+Windows 7 Starter
+Windows 7 HomeBasic
+Windows 7 HomePremium
+Windows 7 Professional
+Windows 7 Ultimate
+Windows 7 Enterprise
+
+Windows 8
+Windows 8 Pro
+Windows 8 Enterprise
+
+Windows 8.1
+Windows 8.1 Pro
+Windows 8.1 Enterprise
+
+Windows 10 Home
+Windows 10 Home Single Language
+Windows 10 Pro
+Windows 10 Pro Education
+Windows 10 Pro for Workstations
+Windows 10 Education
+Windows 10 Enterprise
+Windows 10 Enterprise 2015 LTSB
+Windows 10 Enterprise 2016 LTSB
+Windows 10 Enterprise LTSC 2019
+Windows 10 Enterprise LTSC 2021
+Windows 10 IoT Enterprise
+Windows 10 IoT Enterprise 2015 LTSB
+Windows 10 IoT Enterprise 2016 LTSB
+Windows 10 IoT Enterprise LTSC 2019
+Windows 10 IoT Enterprise LTSC 2021
+
+Windows 11 Home
+Windows 11 Home Single Language
+Windows 11 Pro
+Windows 11 Pro Education
+Windows 11 Pro for Workstations
+Windows 11 Education
+Windows 11 Enterprise
+Windows 11 Enterprise LTSC 2024
+Windows 11 IoT Enterprise
+Windows 11 IoT Enterprise LTSC 2024
+Windows 11 IoT Enterprise Subscription
+Windows 11 IoT Enterprise Subscription LTSC 2024
+
+Windows Longhorn ServerWeb
+Windows Longhorn ServerWebCore
+Windows Longhorn ServerStandard
+Windows Longhorn ServerStandardCore
+Windows Longhorn ServerEnterprise
+Windows Longhorn ServerEnterpriseCore
+Windows Longhorn ServerDatacenter
+Windows Longhorn ServerDatacenterCore
+
+Windows Server 2008 R2 ServerWeb
+Windows Server 2008 R2 ServerWebCore
+Windows Server 2008 R2 ServerStandard
+Windows Server 2008 R2 ServerStandardCore
+Windows Server 2008 R2 ServerEnterprise
+Windows Server 2008 R2 ServerEnterpriseCore
+Windows Server 2008 R2 ServerDatacenter
+Windows Server 2008 R2 ServerDatacenterCore
+
+Windows Server 2012 ServerStandard
+Windows Server 2012 ServerStandardCore
+Windows Server 2012 ServerDatacenter
+Windows Server 2012 ServerDatacenterCore
+
+Windows Server 2012 R2 ServerStandard
+Windows Server 2012 R2 ServerStandardCore
+Windows Server 2012 R2 ServerDatacenter
+Windows Server 2012 R2 ServerDatacenterCore
+
+Windows Server 2016 ServerStandard
+Windows Server 2016 ServerStandardCore
+Windows Server 2016 ServerDatacenter
+Windows Server 2016 ServerDatacenterCore
+
+Windows Server 2019 ServerStandard
+Windows Server 2019 ServerStandardCore
+Windows Server 2019 ServerDatacenter
+Windows Server 2019 ServerDatacenterCore
+
+Windows Server 2022 ServerStandard
+Windows Server 2022 ServerStandardCore
+Windows Server 2022 ServerDatacenter
+Windows Server 2022 ServerDatacenterCore
+
+Windows Server 2025 ServerStandard
+Windows Server 2025 ServerStandardCore
+Windows Server 2025 ServerDatacenter
+Windows Server 2025 ServerDatacenterCore
+```
+
+</details>
+
+<details>
+<summary>--lang list</summary>
+
+Supports these three language format codes. Case insensitive.
+
+| CC Format | CC-CC Format | Language |
+| - | - | - |
+| ar | ar-sa | Arabic |
+| bg | bg-bg | Bulgarian |
+| cs | cs-cz | Czech |
+| da | da-dk | Danish |
+| de | de-de | German |
+| el | el-gr | Greek |
+| gb | en-gb | Eng_Intl |
+| en | en-us | English |
+| es | es-es | Spanish |
+| mx | es-mx | Spanish_Latam |
+| et | et-ee | Estonian |
+| fi | fi-fi | Finnish |
+| | fr-ca | FrenchCanadian |
+| fr | fr-fr | French |
+| he | he-il | Hebrew |
+| hr | hr-hr | Croatian |
+| hu | hu-hu | Hungarian |
+| it | it-it | Italian |
+| ja | ja-jp | Japanese |
+| ko | ko-kr | Korean |
+| lt | lt-lt | Lithuanian |
+| lv | lv-lv | Latvian |
+| no | nb-no | Norwegian |
+| nl | nl-nl | Dutch |
+| pl | pl-pl | Polish |
+| pp | pt-pt | Portuguese |
+| pt | pt-br | Brazilian |
+| ro | ro-ro | Romanian |
+| ru | ru-ru | Russian |
+| sk | sk-sk | Slovak |
+| sl | sl-si | Slovenian |
+| sr | sr-latn / sr-latn-rs | Serbian_Latin |
+| sv | sv-se | Swedish |
+| th | th-th | Thai |
+| tr | tr-tr | Turkish |
+| uk | uk-ua | Ukrainian |
+| cn | zh-cn | ChnSimp |
+| tw | zh-tw | ChnTrad |
+| hk | zh-hk | ChnTrad_Hong_Kong |
+
+</details>
+
+#### Method 2: Specify the ISO link manually
+
+- If you don't know the `--image-name`, you can enter any value. After rebooting, connect via SSH and re-enter the correct value based on the error messages.
+
+```bash
+bash reinstall.sh windows \
+     --image-name "Windows 11 Enterprise LTSC 2024 Evaluation" \
+     --iso "http://YOUR_MIRROR:PORT/windows.iso"
+```
+
+or a magnet link (retained, unverified; tracker discovery may also require external resources)
+
+```bash
+bash reinstall.sh windows \
+     --image-name "Windows 11 Enterprise LTSC 2024" \
+     --iso "magnet:?xt=urn:btih:7352bd2db48c3381dffa783763dc75aa4a6f1cff"
+```
+
+<details>
+
+<summary>The following website provides ISO links.</summary>
+
+- General
+  - <https://ntriver.org/download-windows-office>
+  - <https://massgrave.dev/genuine-installation-media>
+  - <https://next.itellyou.cn>
+  - <https://www.xitongku.com>
+  - <https://www.microsoft.com/software-download/windows10> (Need to open it with a non-Windows User-Agent)
+  - <https://www.microsoft.com/software-download/windows11>
+  - <https://www.microsoft.com/software-download/windows11arm64>
+- Evaluation
+  - <https://www.microsoft.com/evalcenter/download-windows-11-enterprise>
+  - <https://www.microsoft.com/evalcenter/download-windows-11-iot-enterprise-ltsc-eval>
+  - <https://www.microsoft.com/evalcenter/download-windows-server-2012-r2>
+  - <https://www.microsoft.com/evalcenter/download-windows-server-2016>
+  - <https://www.microsoft.com/evalcenter/download-windows-server-2019>
+  - <https://www.microsoft.com/evalcenter/download-windows-server-2022>
+  - <https://www.microsoft.com/evalcenter/download-windows-server-2025>
+- Insider Preview
+  - <https://www.microsoft.com/en-us/software-download/windowsinsiderpreviewiso>
+  - <https://www.microsoft.com/en-us/software-download/windowsinsiderpreviewserver>
+
+</details>
+
+#### Optional Parameters
+
+- `--username USERNAME` Set Username
+- `--password PASSWORD` Set Password
+- `--rdp-port PORT` Change RDP port
+- `--ssh-port PORT` Change SSH port (for log observation during installation only)
+- `--allow-ping` Configure Windows Firewall to Allow Ping Responses
+- `--add-driver INF_OR_DIR` Add additional driver, specifying .inf path, or the folder contains .inf file.
+  - The driver must be downloaded to current system first.
+  - This parameter can be set multiple times to add different driver.
+- `--no-auto-drivers` Prevent the script automatically download drivers. You need to use `--add-driver` to add the missing drivers.
+- `--frpc-config PATH` Add frpc for intranet tunneling. Parameter can be local filepath or HTTP URL of the configuration file.
+- `--hold 1` Reboot only into install environment, without running installer, only for SSH connect to test network connection.
+- `--hold 2` Allow SSH connections for modifying `boot.wim`, `install.wim` or other contents before rebooting into the official Windows installation program, with the disk mounted at `/os`.
+
+#### The following drivers will be downloaded and installed automatically as needed; use `--no-auto-drivers` to disable this feature
+
+- VirtIO ([Community][virtio-virtio], [Alibaba Cloud][virtio-aliyun], [Tencent Cloud][virtio-qcloud], [GCP][virtio-gcp], [GCP (Win7/2008 SHA-1)][virtio-gcp-win6.1sha1]))
+- XEN ([~~Community~~][xen-xen] (unsigned), [Citrix][xen-citrix], [AWS][xen-aws])
+- AWS ([ENA Network Adapter][aws-ena], [NVMe Storage Controller][aws-nvme], [VMClock Virtual Clock][aws-vmclock], [PCI Serial][aws-pciserial]))
+- GCP ([gVNIC Network Adapter][gcp-gvnic], [GGA Display Adapter][gcp-gga])
+- Azure ([MANA Network Adapter][azure-mana])
+- Intel (VMD Storage Controller: [11th Gen Core][intel-vmd-gen11], [12th-15th Gen Core][intel-vmd-gen12-to-gen15], [Core Ultra 3][intel-vmd-ultra3], Network Adapter: [7][intel-nic-7], [8.x][intel-nic-8.1], [10][intel-nic-10], [11][intel-nic-11], [2008 R2][intel-nic-7], [2012][intel-nic-2012], [2012 R2][intel-nic-2012-r2], [2016][intel-nic-2016], [2019][intel-nic-2019], [2022][intel-nic-2022], [2025][intel-nic-2025])
+
+[virtio-virtio]: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/
+[virtio-aliyun]: https://www.alibabacloud.com/help/ecs/user-guide/install-the-virtio-driver-1
+[virtio-qcloud]: https://cloud.tencent.com/document/product/213/17815#b84b2032-752c-43c4-a509-73530b8f82ff
+[virtio-gcp]: https://packages.cloud.google.com/yuck/repos/google-compute-engine-stable/index
+[virtio-gcp-win6.1sha1]: https://console.cloud.google.com/storage/browser/gce-windows-drivers-public/win6.1sha1
+[xen-xen]: https://xenbits.xenproject.org/pvdrivers/win/
+[xen-aws]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/xen-drivers-overview.html
+[xen-citrix]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/Upgrading_PV_drivers.html#win2008-citrix-upgrade
+[aws-ena]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ena-driver-releases-windows.html
+[aws-nvme]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/nvme-driver-version-history.html
+[aws-vmclock]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/other-windows-device-drivers.html
+[aws-pciserial]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/migrating-latest-types.html#install-serial-port-bare-metal
+[gcp-gvnic]: https://packages.cloud.google.com/yuck/repos/google-compute-engine-driver-gvnic-stable/index
+[gcp-gga]: https://packages.cloud.google.com/yuck/repos/google-compute-engine-driver-gga-stable/index
+[azure-mana]: https://learn.microsoft.com/azure/virtual-network/accelerated-networking-mana-windows
+[intel-vmd-gen11]: https://www.intel.com/content/www/us/en/download/849933/intel-rapid-storage-technology-driver-installation-software-with-intel-optane-memory-12th-to-13th-gen-platforms.html
+[intel-vmd-gen12-to-gen15]: https://www.intel.com/content/www/us/en/download/849936/intel-rapid-storage-technology-driver-installation-software-with-intel-optane-memory-12th-to-15th-gen-platforms.html
+[intel-vmd-ultra3]: https://www.intel.com/content/www/us/en/download/920456/intel-rapid-storage-technology-driver-installation-software-for-intel-core-ultra-series-3-platforms.html
+[intel-nic-7]: https://www.intel.com/content/www/us/en/download/15590/intel-network-adapter-driver-for-windows-7-final-release.html
+[intel-nic-8.1]: https://www.intel.com/content/www/us/en/download/17479/intel-network-adapter-driver-for-windows-8-1.html
+[intel-nic-10]: https://www.intel.com/content/www/us/en/download/18293/intel-network-adapter-driver-for-windows-10.html
+[intel-nic-11]: https://www.intel.com/content/www/us/en/download/727998/intel-network-adapter-driver-for-microsoft-windows-11.html
+[intel-nic-2012]: https://www.intel.com/content/www/us/en/download/16789/intel-network-adapter-driver-for-windows-server-2012.html
+[intel-nic-2012-r2]: https://www.intel.com/content/www/us/en/download/17480/intel-network-adapter-driver-for-windows-server-2012-r2.html
+[intel-nic-2016]: https://www.intel.com/content/www/us/en/download/18737/intel-network-adapter-driver-for-windows-server-2016.html
+[intel-nic-2019]: https://www.intel.com/content/www/us/en/download/19372/intel-network-adapter-driver-for-windows-server-2019.html
+[intel-nic-2022]: https://www.intel.com/content/www/us/en/download/706171/intel-network-adapter-driver-for-windows-server-2022.html
+[intel-nic-2025]: https://www.intel.com/content/www/us/en/download/838943/intel-network-adapter-driver-for-windows-server-2025.html
+
+#### How to Specify the Image Name `--image-name`
+
+An ISO usually contains multiple system editions, such as Home and Pro. Therefore, you need to use `--image-name` to specify the system edition (image name) to install, case-insensitive.
+
+You can use tools like DISM, DISM++, or Wimlib to query the image names included in the ISO.
+
+#### How to Use [DISM++](https://github.com/Chuyu-Team/Dism-Multi-language/releases) to Query the Image Names Included in the ISO
+
+Open File menu > Open Image File, select the iso to be installed to get the image name (full system name), and all available image names are installable.
+
+![image-name](https://github.com/bin456789/reinstall/assets/7548515/5aae0a9b-61e2-4f66-bb98-d470a6beaac2)
+
+> [!WARNING]
+> Vista, Server 2008 and 32-bit systems may lack drivers.
+
+> [!WARNING]
+>
+> For Vista, 7, Server 2008, Server 2008 R2 installation:
+>
+> 1. EFI-boot machines must enable CSM.
+>
+> 2. On Hyper-V / Azure, select Generation 1 VM.
+
+> [!WARNING]
+>
+> In the Chinese version of Windows 10 LTSC 2021 ISO `zh-cn_windows_10_enterprise_ltsc_2021_x64_dvd_033b7312.iso`, the `wsappx` process may indefinitely consume CPU resources.
+>
+> The solution is to update the system patches or manually install the `VCLibs` library <https://www.google.com/search?q=ltsc+wsappx>.
+
+> [!WARNING]
+>
+> When installing Windows ISOs released in `May 2022` or later on GCP, the system may repeatedly reboot during the Windows installation (PE) stage. You can resolve this issue using one of the following two methods:
+>
+> 1. Add the `--force-boot-mode bios` parameter. The script will install Windows in `BIOS boot + MBR partition table` mode.
+>
+>    (Optional) After installation, you can convert it to `EFI boot + GPT partition table` using the command `MBR2GPT /convert /allowFullOS`.
+>
+> 2. Create a custom RAW image and install it via DD.
+
+#### Considerations for Installing Windows on ARM
+
+The following ARM notes and provider table are upstream reference material. No ARM or Windows target has been validated by this Po0 fork.
+
+During the installation process, you might encounter a black screen, and the serial console may display `ConvertPages: failed to find range`, but neither issue affects the installation.
+
+| Compatibility | Cloud Provider | Instance Type           | Issues                                                                              |
+| ------------- | -------------- | ----------------------- | ----------------------------------------------------------------------------------- |
+| ✔️            | Azure          | B2pts_v2                |                                                                                     |
+| ✔️            | AWS            | T4g                     |                                                                                     |
+| ✔️            | Scaleway       | COPARM1                 |                                                                                     |
+| ✔️            | Gcore          |                         |                                                                                     |
+| ❔            | Alibaba Cloud  | g6r, c6r, g8y, c8y, r8y | Might hanging at the boot logo during restart; forced reboot will resolve it.       |
+| ❔            | Oracle Cloud   | A1.Flex                 | Installation success is not guaranteed; newer instances are more likely to succeed. |
+| ❌            | Google Cloud   | t2a                     | Missing network card drivers                                                        |
+
+### Cancel the reinstallation
+
+- If the script was run by mistake, you can run this command to cancel the reinstallation operation.
+- Must be run before rebooting.
+
+```bash
+bash reinstall.sh reset
+```
+
+## Parameter Format
+
+### --ssh-key
+
+Prefer a local public-key file or an inline public key on Po0. GitHub/GitLab shorthand and HTTP URLs are still parsed, but require those endpoints to be reachable; they do not bypass blocked public ports.
+
+- `--ssh-key "ssh-rsa ..."`
+- `--ssh-key "ssh-ed25519 ..."`
+- `--ssh-key "ecdsa-sha2-nistp256/384/521 ..."`
+- `--ssh-key http://path/to/public_key`
+- `--ssh-key github:your_username` or `--ssh-key gh:your_username`
+- `--ssh-key gitlab:your_username` or `--ssh-key gl:your_username`
+- `--ssh-key /path/to/public_key`
+
+## How to Use an Old Version
+
+Use an entire historical bundle from this fork; do not replace one script inside a versioned release. `--commit` and `trans.sh update` are not supported.
+
+On a computer with GitHub access, select a commit from [this repository's history](https://github.com/mihomoQ/reinstall-Po0/commits/main), then build and transfer its complete contents:
+
+```bash
+git clone https://github.com/mihomoQ/reinstall-Po0.git
+cd reinstall-Po0
+git checkout COMMIT_ID
+python3 tools/build-bundle.py
+scp dist/reinstall-Po0.tar.gz root@YOUR_SERVER:/root/
+```
+
+Choose a Po0-adapted commit that contains the bundle builder and follow that version's documentation. Extract it into a separate directory rather than mixing files with another version.
+
+## How to Modify the Script for Your Own
+
+1. Fork this repository and clone the complete tree.
+2. For a different internal mirror, copy `po0.conf.example` to `po0.conf` and set `PO0_MIRROR_BASE` to an HTTP origin (host and optional port, without a path). The Debian installer package paths require HTTP.
+3. For specific resource prefixes, copy `po0-mirrors.conf.example` to `po0-mirrors.conf` and add literal source/target HTTP(S) prefix pairs. Only replace resources with endpoints actually reachable from your server.
+4. Modify the code, run the relevant isolated tests, and rebuild the full bundle. Transfer the rebuilt bundle and any private operator configuration separately.
+
+For example, an operator-controlled image server might use:
+
+```text
+https://mirror.nju.edu.cn/ubuntu-cloud-images/ http://YOUR_MIRROR:8080/ubuntu-cloud-images/
+```
+
+`po0.conf` is trusted shell configuration; both private configuration files are Git-ignored and excluded from the public bundle. Do not put credentials, private keys or machine-specific logs into the repository.
+
+### Po0 resources, DNS, time and logs
+
+- Package repositories use the internal mirror. Cloud images prefer internal HTTP and then bundled campus rsync endpoints on port 873. [MirrorZ](https://mirrors.cernet.edu.cn/) is an HTTP redirect service, not an rsync redirector, and is not a runtime dependency here.
+- HTTP and rsync cloud images share available size/SHA256 checks and explicit QCOW2 structural checks. The complete image is transferred once in the installer. Mirror-provided hashes do not authenticate publisher identity. Plain images are downloaded after repartitioning, so transfer or validation failure can require panel recovery.
+- DNS comes from DHCP. The tested machines received Tencent VPC DNS `183.60.83.19` and `183.60.82.98`. Saved original resolvers are used only when valid DHCP DNS is missing; no public DNS replacement is introduced.
+- Chrony uses `time1.tencentyun.com` through `time5.tencentyun.com`. The four verified targets passed first-boot synchronization checks.
+- Follow Debian/Kali installation with `tail -f /var/log/syslog` or `screen -x root/` over SSH. In the Alpine intermediate environment, use `tail -f /reinstall.log`.
+- Gentoo is configured for internal signed repository snapshots and binary packages without external key refresh. Resource and isolated tests passed; a full Gentoo installation remains unverified.
+- Some optional resources, including ELTS keys, frpc, Windows drivers, trackers and other unverified target paths, may still require explicit reachable resources. Retaining a menu entry does not imply that all its downloads are covered by internal mirrors.
+
+The [current live-test record](docs/live-test-2026-10-28.md) covers five actual reinstalls; the [earlier Debian record](docs/live-test-2026-10-27.md) is retained as history. The source was synchronized through upstream commit `54fae2067557b3c0ca49e7c9ce03bca63c793f8c`.
+
+## Thanks
+
+This fork builds on [bin456789/reinstall](https://github.com/bin456789/reinstall). The following server-provider acknowledgements are retained from the upstream project; they do not imply sponsorship or testing of this fork.
+
+[![Oracle Cloud](https://github.com/bin456789/reinstall/assets/7548515/8b430ed4-8344-4f96-b4da-c2bda031cc90)](https://www.oracle.com/cloud/)
+[![DartNode](https://github.com/bin456789/reinstall/assets/7548515/435d6740-bcdd-4f3a-a196-2f60ae397f17)](https://dartnode.com/)

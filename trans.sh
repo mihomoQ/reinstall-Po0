@@ -9057,21 +9057,9 @@ if [ "$hold" = 1 ]; then
 fi
 
 # 正式运行重装
-# shellcheck disable=SC2046,SC2194
-case 1 in
-1)
-    # ChatGPT 说这种性能最高
-    exec > >(exec tee $(get_ttys /dev/) /reinstall.log) 2>&1
-    trans
-    ;;
-2)
-    exec > >(tee $(get_ttys /dev/) /reinstall.log) 2>&1
-    trans
-    ;;
-3)
-    trans 2>&1 | tee $(get_ttys /dev/) /reinstall.log
-    ;;
-esac
+# shellcheck disable=SC2046
+exec > >(exec tee $(get_ttys /dev/) /reinstall.log) 2>&1
+trans
 
 if [ "$hold" = 2 ]; then
     info "hold 2"

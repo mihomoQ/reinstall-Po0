@@ -4,19 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import worker, { launcher } from "../worker.mjs";
-
-test("entry uses HTTPS 8443; archive stays on the static asset binding", async () => {
-  const request = new Request("https://download.example/reinstall.sh");
-  const response = await worker.fetch(request, {});
-  assert.equal(response.status, 200);
-  assert.match(await response.text(), /https:\/\/download\.example:8443\/reinstall\.tar\.gz/);
-  assert.equal(response.headers.get("cache-control"), "no-store");
-  assert.equal((await worker.fetch(new Request(request.url, { method: "POST" }), {})).status, 405);
-  assert.equal(await (await worker.fetch(new Request(request.url, { method: "HEAD" }), {})).text(), "");
-  const assets = { fetch: () => new Response("archive") };
-  assert.equal(await (await worker.fetch(new Request("https://download.example/reinstall.tar.gz"), { ASSETS: assets })).text(), "archive");
-});
+const script = readFileSync(new URL("../public/reinstall.sh", import.meta.url), "utf8");
 
 function run(mode) {
   const root = mkdtempSync(join(tmpdir(), "po0-download-"));
@@ -43,7 +31,6 @@ exit 7
       rmSync(join(source, "reinstall-Po0", "reinstall.sh"));
       assert.equal(spawnSync("tar", ["-czf", archive, "-C", source, "reinstall-Po0"]).status, 0);
     }
-    const script = launcher("https://download.example:8443");
     writeFileSync(join(caller, "reinstall.sh"), script);
     const toShell = (path) => path.replaceAll("\\", "/");
     const env = { ...process.env, MODE: mode, FIXTURE: toShell(archive),

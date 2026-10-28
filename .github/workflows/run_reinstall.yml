@@ -1,6 +1,7 @@
 name: PO0 offline checks
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -23,7 +24,7 @@ jobs:
           busybox ash -n po0-chrony.sh
           busybox ash -n po0-cloud.sh
           sh -n po0-lib.sh
-          node --check worker.mjs
+          bash -n public/reinstall.sh
       - name: Run isolated tests
         run: |
           python3 -m unittest discover -s tests -p 'test*.py' -v

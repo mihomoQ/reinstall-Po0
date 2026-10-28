@@ -12,6 +12,15 @@ PO0_NETCONF_ROOT=${PO0_NETCONF_ROOT:-/dev/netconf}
 PO0_RESOLV_CONF=${PO0_RESOLV_CONF:-/etc/resolv.conf}
 PO0_SAVED_RESOLV_CONF=${PO0_SAVED_RESOLV_CONF:-/configs/po0-resolv.conf}
 
+log() {
+    log_with_uptime="[$(printf '%6s' "$(cut -d ' ' -f1 /proc/uptime)")] $*"
+    echo "$log_with_uptime" >&2
+    if [ -n "${ethx:-}" ]; then
+        mkdir -p "$PO0_NETCONF_ROOT/$ethx" || return 1
+        echo "$log_with_uptime" >>"$PO0_NETCONF_ROOT/$ethx/logs"
+    fi
+}
+
 get_ethx() {
     ip -o link | grep -i -F "link/ether $mac_addr " |
         cut -d: -f2 | sed 's/^ *//;s/@.*//' | head -1 | grep .
@@ -61,16 +70,25 @@ restore_saved_dns_if_needed() {
     fi
     saved_dns=$(usable_nameservers "$PO0_SAVED_RESOLV_CONF")
     if [ -z "$saved_dns" ]; then
-        echo "No DHCP DNS or saved resolver is available for $ethx." >&2
+        log "No DHCP DNS or saved resolver is available for $ethx."
         return 1
     fi
-    printf '%s\n' "$saved_dns" >"$PO0_RESOLV_CONF"
+    printf '%s\n' "$saved_dns" >"$PO0_RESOLV_CONF" || return 1
+    # Use upstream's DNS-only override interface without disabling DHCP or
+    # probing public endpoints. Only resolvers saved from this machine qualify.
+    if printf '%s\n' "$saved_dns" | grep -q '^nameserver [^:]*\.'; then
+        should_add_ipv4_static_dns=1
+    fi
+    if printf '%s\n' "$saved_dns" | grep -q '^nameserver .*:'; then
+        should_add_ipv6_static_dns=1
+    fi
+    log "DHCP DNS is missing; using saved resolvers for $ethx."
 }
 
 configure_dhcp() {
     # BusyBox's own retry limit also works in Debian initrds without timeout.
     if ! udhcpc -i "$ethx" -f -q -n -t 5 -T 3; then
-        echo "DHCPv4 did not complete on $ethx; checking saved configuration." >&2
+        log "DHCPv4 did not complete on $ethx; checking saved configuration."
     fi
 
     # Do not wait for IPv6 on the normal IPv4-only Po0 instance. Keep IPv6
@@ -107,7 +125,7 @@ restore_missing_addresses() {
     # authoritative: never replace it with the address from the old system.
     current_ipv4=$(get_first_ipv4_addr)
     if [ -z "$current_ipv4" ] && [ -n "$ipv4_addr" ] && [ -n "$ipv4_gateway" ]; then
-        echo "Using saved IPv4 temporarily in the installer: $ipv4_addr" >&2
+        log "Using saved IPv4 temporarily in the installer: $ipv4_addr"
         ip -4 addr add "$ipv4_addr" dev "$ethx" || return 1
         current_ipv4=$ipv4_addr
     fi
@@ -144,6 +162,8 @@ write_netconf() {
     printf '0\n' >"$netconf/should_disable_dhcpv4" || return 1
     printf '0\n' >"$netconf/should_disable_accept_ra" || return 1
     printf '0\n' >"$netconf/should_disable_autoconf" || return 1
+    printf '%s\n' "$should_add_ipv4_static_dns" >"$netconf/should_add_ipv4_static_dns" || return 1
+    printf '%s\n' "$should_add_ipv6_static_dns" >"$netconf/should_add_ipv6_static_dns" || return 1
     printf '1\n' >"$netconf/is_in_china" || return 1
     printf '%s\n' "$ethx" >"$netconf/ethx" || return 1
     printf '%s\n' "$mac_addr" >"$netconf/mac_addr" || return 1
@@ -162,6 +182,8 @@ po0_network_main() {
     ipv6_gateway=${5:-}
     # Argument 6 is retained for the upstream caller ABI; Po0 is always CN.
     ipv6_extra_addrs=${7:-}
+    should_add_ipv4_static_dns=0
+    should_add_ipv6_static_dns=0
     if [ -z "$mac_addr" ]; then
         echo 'Missing network interface MAC address.' >&2
         return 1
@@ -175,11 +197,11 @@ po0_network_main() {
         sleep 1
     done
     if [ -z "$ethx" ]; then
-        echo "Network card not found: $mac_addr" >&2
+        log "Network card not found: $mac_addr"
         return 1
     fi
 
-    echo "Configuring Po0 DHCP on $ethx ($mac_addr)..."
+    log "Configuring Po0 DHCP on $ethx ($mac_addr)..."
     ip link set dev lo up || return 1
     ip link set dev "$ethx" up || return 1
     configure_dhcp
@@ -192,14 +214,18 @@ po0_network_main() {
     ipv6_configured=0
     is_have_ipv4 && ipv4_configured=1
     is_have_ipv6 && ipv6_configured=1
+    dns_ready=0
+    if [ "$ipv4_configured" = 1 ] && restore_saved_dns_if_needed; then
+        dns_ready=1
+    fi
     write_netconf || return 1
 
     if [ "$ipv4_configured" = 0 ]; then
-        echo "No IPv4 address/default route on $ethx; existing state was preserved." >&2
+        log "No IPv4 address/default route on $ethx; existing state was preserved."
         return 1
     fi
-    restore_saved_dns_if_needed || return 1
-    echo "Po0 network configured on $ethx; public connectivity is not tested."
+    [ "$dns_ready" = 1 ] || return 1
+    log "Po0 network configured on $ethx; public connectivity is not tested."
 }
 
 if [ "${PO0_NETWORK_LIBRARY_ONLY:-0}" != 1 ]; then

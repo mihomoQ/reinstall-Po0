@@ -8,7 +8,7 @@
 
 - 不再访问公网服务判断地区或联网状态，不再因公网探测失败删除 IP、路由或禁用 DHCP。
 - 安装环境按 MAC 找到网卡并请求 DHCP，保留获得的内网地址、网关、DNS；公网映射地址不写入网卡。
-- DHCP 超时时可在安装环境临时使用原网络配置，目标系统仍配置为 DHCP。原系统实际 DNS 随安装文件保存，不使用公共 DNS 回退。
+- DHCP 超时时可在安装环境临时使用原网络配置，目标系统仍配置为 DHCP。原系统实际 DNS 随安装文件保存；缺少有效 DHCP DNS 时，将保存的解析器传递到目标网络配置，不使用公共 DNS 回退。
 - 默认镜像为 `http://mirrors.tencentyun.com`；下载和目标系统的软件源接入统一 URL 映射，Debian security 单独处理。
 - 软件包源继续使用内网；QCOW2 云镜像优先内网，缺失或不可访问时依次尝试南大、中科大、清华的 rsync 873，Ubuntu 另有官方 rsync 候选。目录/索引发现也使用云镜像专用回退，软件包下载不会切换到校园源。
 - Debian/Kali 安装器及已接入的 Debian/Ubuntu/RPM 云镜像、Alpine 路径安装 chrony，使用 `time1` 至 `time5.tencentyun.com`，并启用开机启动。禁用 chrony 的默认公网池和 DHCP/包含文件引入的时间源；保留发行版自带的状态、日志和权限配置。
@@ -141,4 +141,4 @@ busybox ash -n po0-cloud.sh
 
 ## 上游
 
-基线为 `bin456789/reinstall` 的 `01e1e259968c3b9c5ee5d6aea7253392b5eafe92`。原始文档保存在 `README.upstream.md`、`README.upstream.en.md`；许可证见 [LICENSE](LICENSE)。
+起始基线为 `bin456789/reinstall` 的 `01e1e259968c3b9c5ee5d6aea7253392b5eafe92`；2026-10-28 已合并上游至 `54fae2067557b3c0ca49e7c9ce03bca63c793f8c`。此次同步接入安装提示、网络故障日志与 DNS 配置接口，保留 Po0 不做公网联网探测、不因探测结果切换 DHCP 的策略。原始文档保存在 `README.upstream.md`、`README.upstream.en.md`；许可证见 [LICENSE](LICENSE)。

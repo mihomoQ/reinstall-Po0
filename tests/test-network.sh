@@ -83,6 +83,8 @@ curl() { unexpected_probe curl "$@"; }
 wget() { unexpected_probe wget "$@"; }
 nc() { unexpected_probe nc "$@"; }
 ping() { unexpected_probe ping "$@"; }
+nslookup() { unexpected_probe nslookup "$@"; }
+dig() { unexpected_probe dig "$@"; }
 
 reset_case() {
     scenario=$1
@@ -102,7 +104,7 @@ run_saved_config() {
 
 assert_no_probes_or_flushes() {
     [ ! -s "$test_root/unexpected" ] || fail "unexpected network operation: $(cat "$test_root/unexpected")"
-    if grep -Eq 'flush|del(ete)?|(^| )(curl|wget|nc|ping)( |$)' "$test_root/commands"; then
+    if grep -Eq 'flush|del(ete)?|(^| )(curl|wget|nc|ping|nslookup|dig)( |$)' "$test_root/commands"; then
         fail 'network state was deleted or a reachability probe was executed'
     fi
 }
@@ -111,7 +113,11 @@ reset_case dhcp
 run_saved_config >/dev/null || fail 'DHCP success was rejected when public Internet is unavailable'
 expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/ipv4_has_internet")" 1 'legacy IPv4 configured flag'
 expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/dhcpv4")" 1 'target DHCP mode'
+expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/should_add_ipv4_static_dns")" 0 'DHCP IPv4 DNS override disabled'
+expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/should_add_ipv6_static_dns")" 0 'DHCP IPv6 DNS override disabled'
 expect_equal "$(cat "$PO0_RESOLV_CONF")" "$(printf '# supplied by DHCP\nnameserver 10.20.0.54')" 'DHCP resolver preservation'
+[ -s "$PO0_NETCONF_ROOT/eth0/logs" ] || fail 'network log was not saved'
+grep -Eq '^\[[[:space:]]*[0-9]+\.[0-9]+\] Configuring Po0 DHCP' "$PO0_NETCONF_ROOT/eth0/logs" || fail 'network log is missing uptime prefix'
 assert_no_probes_or_flushes
 echo 'PASS: DHCP succeeds without public reachability and preserves DNS'
 
@@ -130,6 +136,8 @@ expect_equal "$(cat "$test_root/ipv4")" '10.20.1.40/24' 'saved installer address
 expect_equal "$(cat "$test_root/gateway")" '10.20.1.1' 'saved installer gateway'
 expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/dhcpv4")" 1 'rescue must not pin target to static IPv4'
 expect_equal "$(cat "$PO0_RESOLV_CONF")" 'nameserver 10.20.0.53' 'saved non-loopback resolver'
+expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/should_add_ipv4_static_dns")" 1 'saved IPv4 DNS propagated to target'
+expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/should_add_ipv6_static_dns")" 0 'IPv4-only fallback does not add IPv6 DNS'
 assert_no_probes_or_flushes
 echo 'PASS: DHCP timeout uses saved installer state while target stays DHCP'
 
@@ -138,6 +146,8 @@ if po0_network_main '02:00:00:00:00:01' '' '' '' '' true '' >/dev/null 2>&1; the
     fail 'DHCP failure without a saved address was accepted'
 fi
 expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/ipv4_has_internet")" 0 'missing local IPv4 state'
+expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/should_add_ipv4_static_dns")" 0 'failed IPv4 leaves DNS override disabled'
+expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/should_add_ipv6_static_dns")" 0 'failed IPv4 leaves IPv6 DNS override disabled'
 assert_no_probes_or_flushes
 echo 'PASS: missing DHCP and saved state fails without destructive cleanup'
 
@@ -155,10 +165,30 @@ expect_equal "$(cat "$PO0_RESOLV_CONF")" 'nameserver 10.20.0.53' 'stub resolver 
 assert_no_probes_or_flushes
 echo 'PASS: saved resolver replaces only missing or host-local DNS'
 
+reset_case no_dns
+printf 'nameserver 10.20.0.53\nnameserver fd00::53\n' >"$PO0_SAVED_RESOLV_CONF"
+run_saved_config >/dev/null || fail 'dual-stack saved DNS fallback failed'
+expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/should_add_ipv4_static_dns")" 1 'saved IPv4 override'
+expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/should_add_ipv6_static_dns")" 1 'saved IPv6 override'
+expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/dhcpv4")" 1 'DNS fallback keeps target DHCP'
+expect_equal "$(cat "$PO0_RESOLV_CONF")" "$(cat "$PO0_SAVED_RESOLV_CONF")" 'both saved resolver families retained'
+assert_no_probes_or_flushes
+# Re-run on the same shell and netconf directory: a later complete DHCP reply
+# must remove override flags from the previous fallback without pinning DNS.
+scenario=dhcp
+run_saved_config >/dev/null || fail 'subsequent DHCP response failed'
+expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/should_add_ipv4_static_dns")" 0 'stale IPv4 DNS override cleared'
+expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/should_add_ipv6_static_dns")" 0 'stale IPv6 DNS override cleared'
+expect_equal "$(cat "$PO0_RESOLV_CONF")" "$(printf '# supplied by DHCP\nnameserver 10.20.0.54')" 'later DHCP DNS authoritative'
+assert_no_probes_or_flushes
+echo 'PASS: saved DNS family flags propagate and subsequent DHCP clears stale overrides'
+
 reset_case missing_dns
 echo 'nameserver 127.0.0.53' >"$PO0_SAVED_RESOLV_CONF"
 if run_saved_config >/dev/null 2>&1; then fail 'missing usable DNS was silently accepted'; fi
 expect_equal "$(cat "$test_root/ipv4")" '10.20.1.40/24' 'address retained after DNS failure'
+expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/should_add_ipv4_static_dns")" 0 'unavailable DNS does not claim IPv4 override'
+expect_equal "$(cat "$PO0_NETCONF_ROOT/eth0/should_add_ipv6_static_dns")" 0 'unavailable DNS does not claim IPv6 override'
 assert_no_probes_or_flushes
 echo 'PASS: missing usable DNS reports failure without removing the lease'
 

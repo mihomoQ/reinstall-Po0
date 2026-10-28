@@ -182,7 +182,7 @@ setos finalos openeuler 24.03
         embedding = function('po0_embed_assets')
         self.assertIn('"$tmp/po0-cloud-image.meta" "$root/configs/po0-cloud-image.meta"', embedding)
         guard = SOURCE.index('Rsync URLs are supported for cloud-image installation, not raw DD.')
-        self.assertLess(guard, SOURCE.index('# 用户名\nif ! is_netboot_xyz'))
+        self.assertLess(guard, SOURCE.index('# 用户名密码\nif ! is_netboot_xyz'))
 
 
 if __name__ == '__main__':

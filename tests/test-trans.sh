@@ -133,3 +133,58 @@ if grep -Eq 'confhome|web_port|web_path|setup_web|websocketd|nginx|logviewer|lig
     fail 'Remote helper, public fallback, or web-log dependency remains'
 fi
 printf '%s\n' 'PASS: trans repository rewriting (stub + real mappings), RPM sections, idempotence, URL argument boundaries, missing/local assets, invalid mapping failure, SSH-only logging'
+
+# Exercise upstream's DNS-only override interface with Po0's DHCP address mode.
+# All netconf and generated interfaces live in the fixture directory.
+mkdir -p "$scratch/netconf/eth0"
+for key in ipv4_has_internet dhcpv4; do
+    printf '1\n' >"$scratch/netconf/eth0/$key"
+done
+for key in ipv6_has_internet dhcpv6_or_slaac slaac dhcpv6 other \
+    should_disable_dhcpv4 should_disable_accept_ra should_disable_autoconf \
+    should_add_ipv4_static_dns should_add_ipv6_static_dns; do
+    printf '0\n' >"$scratch/netconf/eth0/$key"
+done
+printf '02:00:00:00:00:01\n' >"$scratch/netconf/eth0/mac_addr"
+printf '\n' >"$scratch/netconf/eth0/rdnss"
+get_netconf_to() {
+    local value
+    value=$(cat "$scratch/netconf/$ethx/$1") || return
+    printf -v "$1" '%s' "$value"
+}
+get_eths() { printf 'eth0\n'; }
+get_current_dns() {
+    case "$1" in 4) printf '10.20.0.53\n' ;; 6) printf 'fd00::53\n' ;; *) return 1 ;; esac
+}
+distro=debian
+releasever=12
+ethx=eth0
+is_dhcpv4 || fail 'normal address mode is not DHCP'
+if should_add_ipv4_static_dns || should_add_ipv6_static_dns; then fail 'normal DHCP gained DNS overrides'; fi
+create_ifupdown_config "$scratch/interfaces"
+assert_has "$scratch/interfaces" 'iface eth0 inet dhcp'
+if grep -q 'dns-nameserver' "$scratch/interfaces"; then fail 'DHCP resolver was unnecessarily pinned'; fi
+
+printf '1\n' >"$scratch/netconf/eth0/should_add_ipv4_static_dns"
+should_add_ipv4_static_dns || fail 'saved IPv4 DNS flag ignored'
+is_dhcpv4 || fail 'DNS override disabled DHCP'
+if is_staticv4; then fail 'DNS override changed IP to static'; fi
+create_ifupdown_config "$scratch/interfaces"
+assert_has "$scratch/interfaces" 'iface eth0 inet dhcp'
+assert_has "$scratch/interfaces" '    dns-nameservers 10.20.0.53'
+if grep -q 'inet static\|accept_ra 0\|autoconf 0' "$scratch/interfaces"; then fail 'DNS override disabled address autoconfiguration'; fi
+printf '%s\n' 'PASS: DNS-only override renders DHCP plus saved IPv4 DNS without static IP'
+
+for key in ipv6_has_internet dhcpv6_or_slaac slaac other; do
+    printf '1\n' >"$scratch/netconf/eth0/$key"
+done
+printf 'fd00::54\n' >"$scratch/netconf/eth0/rdnss"
+if should_add_ipv6_static_dns; then fail 'working IPv6 DNS was unnecessarily pinned'; fi
+printf '1\n' >"$scratch/netconf/eth0/should_add_ipv6_static_dns"
+should_add_ipv6_static_dns || fail 'saved IPv6 DNS flag ignored'
+create_ifupdown_config "$scratch/interfaces"
+assert_has "$scratch/interfaces" 'iface eth0 inet dhcp'
+assert_has "$scratch/interfaces" 'iface eth0 inet6 auto'
+assert_has "$scratch/interfaces" '    dns-nameserver fd00::53'
+is_dhcpv4 || fail 'IPv6 DNS override changed IPv4 DHCP mode'
+printf '%s\n' 'PASS: DNS-only override renders SLAAC plus saved IPv6 DNS without disabling DHCP'

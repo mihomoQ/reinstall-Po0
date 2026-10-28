@@ -109,7 +109,7 @@ po0_cloud_fetch() {
 }
 
 po0_cloud_meta_get() (
-    case "$1" in url|size|sha256|expanded_size|type) ;; *) exit 1 ;; esac
+    case "$1" in url|size|sha256|checksum|expanded_size|type) ;; *) exit 1 ;; esac
     [ -f "$2" ] || exit 1
     value=$(sed -n "s/^$1=//p" "$2")
     [ -n "$value" ] || exit 1
@@ -117,61 +117,120 @@ po0_cloud_meta_get() (
     printf '%s\n' "$value"
 )
 
-po0_cloud_stage() (
-    requested=$1; cache=$2; metadata=$3
-    mkdir -p "$cache"
-    # Canonicalize for use after the caller changes its working directory.
-    cache=$(cd "$cache" && pwd)
-    destination=$cache/cloud-image
+po0_cloud_checksum_parse() (
+    # Accept GNU sha256sum and BSD/Fedora SHA256 forms. Match the complete
+    # basename literally, never a substring or a caller-supplied regex.
+    awk -v wanted="$1" '
+        function save(hash, name) {
+            sub(/^\*/, "", name); sub(/^\.\//, "", name)
+            if (name != wanted) return
+            if (length(hash) != 64 || hash ~ /[^0-9a-fA-F]/) {invalid=1; return}
+            hash=tolower(hash)
+            if (found && result != hash) conflict=1
+            result=hash; found=1
+        }
+        {
+            sub(/\r$/, "")
+            if ($0 ~ /^SHA256 \(/) {
+                prefix="SHA256 (" wanted ")"
+                if (index($0, prefix) == 1) {
+                    tail=substr($0, length(prefix) + 1)
+                    if (substr(tail, 1, 3) != " = ") invalid=1
+                    else save(substr(tail, 4), wanted)
+                }
+            } else {
+                hash=$1; name=$0; sub(/^[^[:space:]]+[[:space:]]+/, "", name)
+                save(hash, name)
+            }
+        }
+        END {
+            if (invalid || conflict) exit 2
+            if (found) print result; else exit 1
+        }' "$2"
+)
+
+po0_cloud_checksum() (
+    source=$1
+    directory=${source%/*}; filename=${source##*/}
+    scratch=$(mktemp -d) || exit
+    trap 'rm -rf "$scratch"' EXIT HUP INT TERM
+    fedora=$(printf '%s\n' "$filename" | sed -n -E \
+        's/^Fedora-Cloud-Base-Generic-(.+)\.(x86_64|aarch64)\.qcow2$/Fedora-Cloud-\1-\2-CHECKSUM/p')
+    for manifest in SHA256SUMS "$filename.sha256" "$filename.sha256sum" "$filename.CHECKSUM" CHECKSUM $fedora; do
+        manifest_url=$directory/$manifest
+        # Even an unusual image filename cannot make this fetch the image.
+        [ "$manifest_url" != "$source" ] || continue
+        size=$(po0_cloud_rsync_size "$manifest_url" 2>/dev/null) || continue
+        [ "$size" -le 1048576 ] || continue
+        # Both the advertised and received sizes are bounded. --max-size also
+        # handles a manifest replaced by a large file after the listing.
+        rm -f "$scratch/manifest"
+        if ! command rsync -4 -L --no-motd --max-size=1048576 --contimeout=5 --timeout=10 \
+            -- "$manifest_url" "$scratch/manifest" >/dev/null 2>&1; then continue; fi
+        [ -f "$scratch/manifest" ] || continue
+        [ "$(wc -c <"$scratch/manifest")" -le 1048576 ] || continue
+        if digest=$(po0_cloud_checksum_parse "$filename" "$scratch/manifest"); then
+            printf '%s\n' "$digest"
+            exit 0
+        else
+            status=$?
+            if [ "$status" -eq 2 ]; then
+                echo "Invalid or conflicting SHA256 entry for $filename in $manifest_url" >&2
+                exit 2
+            fi
+        fi
+    done
+    exit 1
+)
+
+po0_cloud_probe() (
+    requested=$1; metadata=$2
+    # Preparation only lists the image and downloads bounded checksum text.
+    # The image payload is transferred once, by the installation environment.
+    rm -f "$metadata"
     candidates=$(po0_cloud_candidates "$requested") || exit
     for source in $candidates; do
         case "$source" in rsync://*) ;; *) continue ;; esac
         size=$(po0_cloud_rsync_size "$source") || continue
-        available=$(df -Pk "$cache" | awk 'NR == 2 {print $4}')
-        case "$available" in ''|*[!0-9]*) echo 'Cannot determine cloud staging space.' >&2; exit 1 ;; esac
-        needed=$(((size + 1023) / 1024 + 65536))
-        if [ "$available" -lt "$needed" ]; then
-            echo "Insufficient host space for rsync image staging ($size bytes plus reserve)." >&2
-            exit 1
+        printf 'url=%s\nsize=%s\n' "$source" "$size" >"$metadata" || exit
+        if digest=$(po0_cloud_checksum "$source"); then
+            printf 'checksum=sha256\nsha256=%s\n' "$digest" >>"$metadata" || exit
+        else
+            status=$?
+            if [ "$status" -eq 2 ]; then
+                rm -f "$metadata"
+                echo 'Refusing cloud image preparation with an invalid matching SHA256 manifest.' >&2
+                exit 2
+            fi
+            echo 'No matching SHA256 manifest; installation will check transfer, size and QCOW2 structure.' >&2
+            printf 'checksum=unavailable\n' >>"$metadata" || exit
         fi
-        echo "Staging full rsync image before boot: $source ($size bytes)" >&2
-        if ! po0_cloud_fetch "$source" "$destination"; then
-            # A failed source must not consume the free-space budget checked
-            # for the next mirror. Do not mix a partial from another source.
-            rm -f "$destination"
-            continue
-        fi
-        actual=$(wc -c <"$destination")
-        [ "$actual" -eq "$size" ] || {
-            echo 'Staged image size changed; trying another source.' >&2
-            rm -f "$destination"
-            continue
-        }
-        digest=$(sha256sum "$destination") || exit 1
-        digest=${digest%% *}
-        case "$digest" in ''|*[!0-9a-f]*) echo 'Failed to hash staged cloud image.' >&2; exit 1 ;; esac
-        [ "${#digest}" -eq 64 ] || exit 1
-        printf 'url=%s\nsize=%s\nsha256=%s\n' "$source" "$size" "$digest" >"$metadata"
-        printf '%s\n' "$destination"
+        printf '%s\n' "$source"
         exit 0
     done
-    echo 'Failed to stage a complete rsync cloud image before boot.' >&2
+    echo 'No available rsync cloud image to prepare.' >&2
     exit 1
 )
 
 po0_cloud_verify() (
     image=$1; metadata=$2
     size=$(po0_cloud_meta_get size "$metadata") || exit
-    digest=$(po0_cloud_meta_get sha256 "$metadata") || exit
     case "$size" in ''|*[!0-9]*) echo 'Invalid pinned image size.' >&2; exit 1 ;; esac
+    [ "$size" -gt 0 ] || exit 1
+    [ -f "$image" ] && [ "$(wc -c <"$image")" -eq "$size" ] || {
+        echo 'Cloud image size differs from the prepared listing.' >&2; exit 1
+    }
+    # Absence is allowed; malformed or duplicate SHA256 entries are not.
+    if ! grep -q '^sha256=' "$metadata"; then
+        echo 'No SHA256 manifest was available; image size verified.' >&2
+        exit 0
+    fi
+    digest=$(po0_cloud_meta_get sha256 "$metadata") || exit
     case "$digest" in *[!0-9a-f]*|'') echo 'Invalid pinned image digest.' >&2; exit 1 ;; esac
     [ "${#digest}" -eq 64 ] || exit 1
-    [ -f "$image" ] && [ "$(wc -c <"$image")" -eq "$size" ] || {
-        echo 'Cloud image size differs from the preboot copy.' >&2; exit 1
-    }
     actual=$(sha256sum "$image" | cut -d ' ' -f1)
     [ "$actual" = "$digest" ] || {
-        echo 'Cloud image content changed since preparation; refusing to use it.' >&2; exit 1
+        echo 'Cloud image does not match the prepared SHA256 manifest.' >&2; exit 1
     }
 )
 

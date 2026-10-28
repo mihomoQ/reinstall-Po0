@@ -10,7 +10,7 @@ set -eE
 confhome=file:///po0-assets
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
-SCRIPT_VERSION=PO0-20261028-1
+SCRIPT_VERSION=PO0-20261028-2
 
 # 记录要用到的 windows 程序，运行时输出删除 \r
 WINDOWS_EXES='cmd powershell wmic reg diskpart netsh bcdedit mountvol'
@@ -398,51 +398,47 @@ po0_prepare_cloud_image() {
     finalos_img=$selected
     case "$selected" in
     rsync://*)
-        po0_cloud_cache=$(po0_cloud_stage "$selected" "$tmp/po0-cloud" "$tmp/po0-cloud-image.meta") || {
-            error_and_exit "Could not stage the rsync cloud image before changing boot files."
+        finalos_img=$(po0_cloud_probe "$selected" "$tmp/po0-cloud-image.meta") || {
+            error_and_exit "Could not read the rsync cloud image metadata before changing boot files."
             return 1
         }
-        # A listed mirror can fail during the actual transfer; the stage helper
-        # records the source that supplied the complete, verified file.
-        finalos_img=$(po0_cloud_meta_get url "$tmp/po0-cloud-image.meta") || return
         ;;
     *)
-        po0_cloud_cache=
         rm -f "$tmp/po0-cloud-image.meta"
         ;;
     esac
 }
 
+po0_cloud_expected_type() {
+    # This is a transport expectation, not content verification. The installer
+    # checks the downloaded file explicitly as QCOW2 before using it.
+    local path=$1 compression=
+    case "$path" in
+    *.gz|*.gzip) compression=gzip; path=${path%.*} ;;
+    *.xz) compression=xz; path=${path%.*} ;;
+    *.zst|*.zstd) compression=zstd; path=${path%.*} ;;
+    esac
+    case "$path" in
+    *.qcow2|*.qcow2c|*.img) printf 'qemu%s\n' "${compression:+.$compression}" ;;
+    *) return 1 ;;
+    esac
+}
+
 po0_finish_cloud_metadata() {
     case "$finalos_img" in rsync://*) ;; *) return 0 ;; esac
-    local kind="$finalos_img_type${finalos_img_type_warp:+.$finalos_img_type_warp}" expanded
+    local kind="$finalos_img_type${finalos_img_type_warp:+.$finalos_img_type_warp}"
     case "$kind" in
-    qemu)
-        expanded=$(po0_cloud_meta_get size "$tmp/po0-cloud-image.meta") || return
-        ;;
-    qemu.gzip|qemu.xz|qemu.zstd)
-        install_pkg "$finalos_img_type_warp" >&2
-        # Count the real expanded file, not a guessed ratio. pipefail prevents
-        # a corrupt/truncated archive from becoming trusted install metadata.
-        if ! expanded=$(
-            set -o pipefail
-            "$finalos_img_type_warp" -dc "$po0_cloud_cache" | wc -c
-        ); then
-            error_and_exit "The staged cloud image could not be completely decompressed."
-            return 1
-        fi
-        expanded=${expanded//[[:space:]]/}
-        ;;
+    qemu|qemu.gzip|qemu.xz|qemu.zstd) ;;
     *)
         error_and_exit "Rsync fallback supports QCOW2 cloud images, not $kind."
         return 1
         ;;
     esac
-    if ! [[ "$expanded" =~ ^[1-9][0-9]*$ ]]; then
-        error_and_exit 'Invalid expanded cloud-image size.'
+    if [ "$(po0_cloud_meta_get url "$tmp/po0-cloud-image.meta")" != "$finalos_img" ]; then
+        error_and_exit 'Cloud-image metadata does not match the selected rsync source.'
         return 1
     fi
-    printf 'type=%s\nexpanded_size=%s\n' "$kind" "$expanded" >>"$tmp/po0-cloud-image.meta"
+    printf 'type=%s\n' "$kind" >>"$tmp/po0-cloud-image.meta"
 }
 
 test_url() {
@@ -468,14 +464,15 @@ test_url_real() {
     tmp_file=$tmp/img-test
 
     if [[ "$url" = rsync://* ]]; then
-        # file_enhanced may unpack/overwrite its input. Inspect a header copy,
-        # never the retained full image used for its SHA256 and expanded size.
-        if [ -z "${po0_cloud_cache:-}" ] || [ ! -s "$po0_cloud_cache" ] ||
-            [ "$(po0_cloud_meta_get url "$tmp/po0-cloud-image.meta")" != "$url" ]; then
-            failed 'Rsync image must be staged by the cloud-image preparation path.'
+        if [ "$(po0_cloud_meta_get url "$tmp/po0-cloud-image.meta")" != "$url" ]; then
+            failed 'Rsync image must be probed by the cloud-image preparation path.'
             return 1
         fi
-        head -c 1048576 "$po0_cloud_cache" >"$tmp_file" || return
+        if ! real_type=$(po0_cloud_expected_type "$url"); then
+            failed 'Rsync cloud-image filename must identify QCOW2 and any supported compression.'
+            return 1
+        fi
+        echo "Expected image type: $real_type (verified after installer download)"
     else
 
         # TODO: 好像无法识别 nixos 官方源的跳转
@@ -519,9 +516,11 @@ test_url_real() {
 
     # 如果要检查文件类型
     if [ -n "$expect_types" ]; then
-        install_pkg file
-        real_type=$(file_enhanced "$tmp_file")
-        echo "File type: $real_type"
+        if [[ "$url" != rsync://* ]]; then
+            install_pkg file
+            real_type=$(file_enhanced "$tmp_file")
+            echo "File type: $real_type"
+        fi
 
         # debian 9 ubuntu 16.04-20.04 可能会将 iso 识别成 raw
         for type in $expect_types $([ "$expect_types" = iso ] && echo raw); do
@@ -2331,10 +2330,10 @@ Continue with DD?
 
     # 集中测试云镜像格式
     if is_use_cloud_image && [ "$step" = finalos ]; then
-        po0_prepare_cloud_image "$finalos_img"
+        po0_prepare_cloud_image "$finalos_img" || return
         # shellcheck disable=SC2154
-        test_url "$finalos_img" 'qemu qemu.gzip qemu.xz qemu.zstd raw.xz' finalos_img_type
-        po0_finish_cloud_metadata
+        test_url "$finalos_img" 'qemu qemu.gzip qemu.xz qemu.zstd raw.xz' finalos_img_type || return
+        po0_finish_cloud_metadata || return
     fi
 }
 

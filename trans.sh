@@ -25,7 +25,7 @@ fi
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 # shellcheck disable=SC2034
-SCRIPT_VERSION=PO0-20261028-1
+SCRIPT_VERSION=PO0-20261028-2
 
 TRUE=0
 FALSE=1
@@ -4884,6 +4884,69 @@ disable_kdump() {
     fi
 }
 
+po0_cloud_memory_kb() {
+    awk '/^MemAvailable:/ {print $2; found=1} END {if (!found) exit 1}' /proc/meminfo
+}
+
+po0_cloud_unpack() {
+    # Bound decoder memory as well as the compressed-file RAM cache.
+    case "$img_type_warp" in
+    xz) xz --memlimit-decompress=256MiB -dc "$1" ;;
+    zstd) zstd --memory=256MB -dc "$1" ;;
+    gzip) gzip -dc "$1" ;;
+    *) return 1 ;;
+    esac
+}
+
+po0_cache_compressed_cloud() (
+    local meta=$1 disk_bytes=$2 memory_kb free_kb required_kb magic count
+    # /tmp is in the Alpine live environment's RAM filesystem. Keep the one
+    # downloaded compressed file across create_part; never cache on the old OS.
+    local cache_dir=${PO0_CLOUD_CACHE_DIR:-/tmp/po0-cloud-cache}
+    mkdir -p "$cache_dir" || return
+    memory_kb=$(po0_cloud_memory_kb) || return
+    free_kb=$(df -Pk "$cache_dir" | awk 'NR == 2 {print $4}')
+    case "$memory_kb:$free_kb" in *[!0-9:]*|:*|*:)
+        error_and_exit 'Cannot determine RAM space for the compressed cloud image.'; return 1 ;;
+    esac
+    required_kb=$(((po0_cloud_image_bytes + 1023) / 1024))
+    if [ "$memory_kb" -lt "$((required_kb + 512 * 1024))" ] ||
+        [ "$free_kb" -lt "$((required_kb + 1024))" ]; then
+        error_and_exit 'Compressed rsync image needs RAM for the archive plus 512 MiB; use an uncompressed QCOW2 image on this machine.'
+        return 1
+    fi
+    po0_cloud_ram_cache=$(mktemp "$cache_dir/image.XXXXXX") || return
+    cache_keep=0
+    trap 'rm -f "$po0_cloud_ram_cache.header" "$po0_cloud_ram_cache.count"; [ "$cache_keep" = 1 ] || rm -f "$po0_cloud_ram_cache"' EXIT
+    po0_cloud_fetch "$img" "$po0_cloud_ram_cache" || return
+    po0_cloud_verify "$po0_cloud_ram_cache" "$meta" || return
+    apk add "$img_type_warp" >&2 || return
+    # Count the complete expanded stream without storing a second image in RAM.
+    # A stream larger than the whole disk cannot fit: bound it before counting.
+    if ! (
+        set -o pipefail
+        po0_cloud_unpack "$po0_cloud_ram_cache" | head -c "$((disk_bytes + 1))" | {
+            dd bs=1 count=4 of="$po0_cloud_ram_cache.header" 2>/dev/null || exit
+            wc -c >"$po0_cloud_ram_cache.count"
+        }
+    ); then
+        error_and_exit 'Compressed cloud image is corrupt, too large or exceeds decoder memory.'
+        return 1
+    fi
+    magic=$(od -An -tx1 "$po0_cloud_ram_cache.header" | tr -d '[:space:]')
+    [ "$magic" = 514649fb ] || {
+        error_and_exit 'The decompressed cloud image is not QCOW2.'; return 1
+    }
+    count=$(tr -d '[:space:]' <"$po0_cloud_ram_cache.count")
+    po0_cloud_expanded_bytes=$((count + 4))
+    [ "$po0_cloud_expanded_bytes" -le "$disk_bytes" ] || {
+        error_and_exit 'Expanded cloud image is larger than the target disk.'; return 1
+    }
+    rm -f "$po0_cloud_ram_cache.header" "$po0_cloud_ram_cache.count"
+    cache_keep=1
+    printf '%s %s\n' "$po0_cloud_expanded_bytes" "$po0_cloud_ram_cache"
+)
+
 po0_prepare_rsync_cloud() {
     case "${img:-}" in rsync://*) ;; *) return 0 ;; esac
     po0_cloud_prepared=
@@ -4893,8 +4956,8 @@ po0_prepare_rsync_cloud() {
     fi
 
     local meta=${PO0_CLOUD_META_FILE:-/configs/po0-cloud-image.meta}
-    local saved_url saved_type saved_sha remote_size expected_type storage_bytes
-    local disk_bytes boot_mb minimum_bytes
+    local saved_url saved_type saved_sha checksum remote_size expected_type storage_bytes
+    local disk_bytes boot_mb minimum_bytes cache_result
     [ -r "$meta" ] || {
         error_and_exit 'Missing cloud image metadata from the host preparation stage.'
         return 1
@@ -4902,19 +4965,28 @@ po0_prepare_rsync_cloud() {
     # Metadata is data, never executable shell input.
     saved_url=$(po0_cloud_meta_get url "$meta") || return
     saved_type=$(po0_cloud_meta_get type "$meta") || return
-    saved_sha=$(po0_cloud_meta_get sha256 "$meta") || return
+    checksum=$(po0_cloud_meta_get checksum "$meta") || return
+    saved_sha=$(po0_cloud_meta_get sha256 "$meta") || saved_sha=
     po0_cloud_image_bytes=$(po0_cloud_meta_get size "$meta") || return
     expected_type="qemu${img_type_warp:+.$img_type_warp}"
     [ "$saved_url" = "$img" ] && [ "$saved_type" = "$expected_type" ] || {
         error_and_exit 'Cloud image URL/type differs from the prepared metadata.'
         return 1
     }
-    case "$saved_sha" in ''|*[!0-9a-f]*)
-        error_and_exit 'Invalid cloud image SHA256 metadata.'; return 1 ;;
+    case "$checksum" in
+    sha256)
+        case "$saved_sha" in ''|*[!0-9a-f]*)
+            error_and_exit 'Invalid cloud image SHA256 metadata.'; return 1 ;;
+        esac
+        [ "${#saved_sha}" -eq 64 ] || {
+            error_and_exit 'Invalid cloud image SHA256 length.'; return 1
+        } ;;
+    unavailable)
+        [ -z "$saved_sha" ] || {
+            error_and_exit 'Conflicting cloud image checksum metadata.'; return 1
+        } ;;
+    *) error_and_exit 'Invalid cloud image checksum mode.'; return 1 ;;
     esac
-    [ "${#saved_sha}" -eq 64 ] || {
-        error_and_exit 'Invalid cloud image SHA256 length.'; return 1
-    }
     case "$po0_cloud_image_bytes" in ''|*[!0-9]*)
         error_and_exit 'Invalid cloud image size metadata.'; return 1 ;;
     esac
@@ -4922,50 +4994,45 @@ po0_prepare_rsync_cloud() {
         error_and_exit 'Cloud image size must be positive.'; return 1
     }
 
+    # Plain images use the exact listed size. Compressed images are downloaded
+    # once into RAM and measured here, before any target partition changes.
+    po0_cloud_ram_cache=
     po0_cloud_expanded_bytes=$po0_cloud_image_bytes
     if [ -n "${img_type_warp:-}" ]; then
         case "$img_type_warp" in xz|gzip|zstd) ;; *)
             error_and_exit 'Unsupported rsync cloud image compression.'; return 1 ;;
         esac
-        po0_cloud_expanded_bytes=$(po0_cloud_meta_get expanded_size "$meta") || return
-        case "$po0_cloud_expanded_bytes" in ''|*[!0-9]*)
-            error_and_exit 'Invalid expanded cloud image size metadata.'; return 1 ;;
-        esac
-        [ "$po0_cloud_expanded_bytes" -gt 0 ] || {
-            error_and_exit 'Expanded cloud image size must be positive.'; return 1
-        }
     fi
-
-    storage_bytes=$po0_cloud_image_bytes
-    if [ -n "${img_type_warp:-}" ]; then
-        storage_bytes=$((storage_bytes + po0_cloud_expanded_bytes))
-        [ "$storage_bytes" -gt "$po0_cloud_image_bytes" ] &&
-            [ "$storage_bytes" -gt "$po0_cloud_expanded_bytes" ] || {
-            error_and_exit 'Cloud image storage size overflow.'; return 1
-        }
-    fi
-    po0_cloud_installer_mb=$(get_part_size_mb_for_file_size_b "$storage_bytes") || return
     disk_bytes=$(get_disk_size "/dev/$xda") || return
     case "$disk_bytes" in ''|*[!0-9]*)
         error_and_exit 'Cannot determine target disk size before rsync installation.'; return 1 ;;
     esac
+    # Check the source before destructive operations. APK stays on the internal
+    # repository; only the cloud image and its small manifest use rsync.
+    apk add rsync || return
+    remote_size=$(po0_cloud_rsync_size "$img") || return
+    [ "$remote_size" = "$po0_cloud_image_bytes" ] || {
+        error_and_exit 'The rsync cloud image changed size after host preparation.'
+        return 1
+    }
+    if [ -n "${img_type_warp:-}" ]; then
+        cache_result=$(po0_cache_compressed_cloud "$meta" "$disk_bytes") || return
+        po0_cloud_expanded_bytes=${cache_result%% *}
+        po0_cloud_ram_cache=${cache_result#* }
+    fi
+    storage_bytes=$po0_cloud_expanded_bytes
+    po0_cloud_installer_mb=$(get_part_size_mb_for_file_size_b "$storage_bytes") || return
     if is_efi; then boot_mb=101; else boot_mb=2; fi
     # This is only a hard lower bound, not a guarantee that a distro's files
     # fit. Reject impossible staging layouts before wipefs erases the disk.
     minimum_bytes=$(((po0_cloud_installer_mb + boot_mb + 1024) * 1024 * 1024))
     [ "$minimum_bytes" -gt "$storage_bytes" ] || {
+        [ -z "$po0_cloud_ram_cache" ] || rm -f "$po0_cloud_ram_cache"
         error_and_exit 'Cloud image partition reservation overflow.'; return 1
     }
     [ "$disk_bytes" -ge "$minimum_bytes" ] || {
+        [ -z "$po0_cloud_ram_cache" ] || rm -f "$po0_cloud_ram_cache"
         error_and_exit 'Not enough disk space for the staged image, boot area and at least 1 GiB of OS space.'
-        return 1
-    }
-
-    # APK remains on the internal package repository. Only the image uses rsync.
-    apk add rsync || return
-    remote_size=$(po0_cloud_rsync_size "$img") || return
-    [ "$remote_size" = "$po0_cloud_image_bytes" ] || {
-        error_and_exit 'The rsync cloud image changed size after host preparation.'
         return 1
     }
     po0_cloud_prepared=$img
@@ -4973,44 +5040,53 @@ po0_prepare_rsync_cloud() {
 
 po0_download_rsync_qcow() {
     local target=$1 meta=${PO0_CLOUD_META_FILE:-/configs/po0-cloud-image.meta}
-    local compressed expanded_actual
+    local expanded_actual image_info
     [ "${po0_cloud_prepared:-}" = "$img" ] || {
         error_and_exit 'Rsync cloud image was not prepared.'; return 1
     }
     if [ -n "${img_type_warp:-}" ]; then
-        compressed=$target.rsync-compressed
-        po0_cloud_fetch "$img" "$compressed" || return
-        po0_cloud_verify "$compressed" "$meta" || return
+        [ -n "${po0_cloud_ram_cache:-}" ] && [ -f "$po0_cloud_ram_cache" ] || {
+            error_and_exit 'Missing compressed image RAM cache; refusing a second download.'; return 1
+        }
+        po0_cloud_verify "$po0_cloud_ram_cache" "$meta" || return
         if ! (
             set -o pipefail
-            pipe_extract <"$compressed" >"$target"
+            po0_cloud_unpack "$po0_cloud_ram_cache" >"$target"
         ); then
             error_and_exit 'Failed to unpack the verified rsync cloud image.'
             return 1
         fi
         expanded_actual=$(wc -c <"$target" | tr -d '[:space:]')
         [ "$expanded_actual" = "$po0_cloud_expanded_bytes" ] || {
-            error_and_exit 'Expanded cloud image size differs from host preparation.'
+            error_and_exit 'Expanded cloud image size differs from the measured RAM cache.'
             return 1
         }
-        rm -f "$compressed"
+        rm -f "$po0_cloud_ram_cache"
+        po0_cloud_ram_cache=
     else
         po0_cloud_fetch "$img" "$target" || return
         po0_cloud_verify "$target" "$meta" || return
     fi
-    qemu-img info "$target" >/dev/null || return
+    # Force QCOW2: auto-detection treats arbitrary text as a successful raw
+    # image. Reject dependencies on other local files before qemu-nbd opens it.
+    image_info=$(qemu-img info -f qcow2 --output=json "$target") || return
+    if printf '%s\n' "$image_info" | grep -Eq '"(backing-filename|full-backing-filename|data-file)"[[:space:]]*:'; then
+        error_and_exit 'Cloud image must be self-contained (no backing or external data file).'
+        return 1
+    fi
+    qemu-img check -f qcow2 "$target" || return
 }
 
 download_qcow() {
-    apk add qemu-img
+    apk add qemu-img || return
     info "Download qcow2 image"
 
-    mkdir -p /installer
-    mount /dev/disk/by-label/installer /installer
+    mkdir -p /installer || return
+    mount /dev/disk/by-label/installer /installer || return
 
     qcow_file=/installer/cloud_image.qcow2
     if [[ "$img" = rsync://* ]]; then
-        po0_download_rsync_qcow "$qcow_file"
+        po0_download_rsync_qcow "$qcow_file" || return
     elif [ -n "$img_type_warp" ]; then
         # 边下载边解压，单线程下载
         # 用官方 wget ，带进度条
@@ -5084,7 +5160,7 @@ get_cloud_image_part_size() {
             error_and_exit 'Rsync image sizing requires validated preparation metadata.'
             return 1
         }
-        # Prepared size includes both compressed and expanded files when needed.
+        # The compressed archive stays in RAM; only expanded QCOW2 uses disk.
         echo "${po0_cloud_installer_mb}MiB"
         return
         ;;
@@ -8922,8 +8998,8 @@ trans() {
     if is_use_cloud_image; then
         case "$img_type" in
         qemu)
-            create_part
-            download_qcow
+            create_part || return
+            download_qcow || return
             case "$distro" in
             centos | almalinux | rocky | oracle | redhat | anolis | opencloudos | openeuler)
                 # 这几个系统云镜像系统盘是8~9g xfs，而我们的目标是能在5g硬盘上运行，因此改成复制系统文件

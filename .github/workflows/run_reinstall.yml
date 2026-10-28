@@ -35,6 +35,8 @@ jobs:
       - name: Build and verify the portable bundle
         run: |
           python3 tools/build-bundle.py
+          python3 tools/build-worker.py
+          bash -n dist/worker/reinstall.sh
           mkdir -p dist/check
           tar xzf dist/reinstall-Po0.tar.gz -C dist/check
           cd dist/check/reinstall-Po0
@@ -42,4 +44,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: reinstall-Po0-candidate
-          path: dist/reinstall-Po0.tar.gz
+          path: |
+            dist/reinstall-Po0.tar.gz
+            dist/worker/reinstall.sh

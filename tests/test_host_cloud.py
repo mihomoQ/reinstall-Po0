@@ -40,17 +40,22 @@ po0_rewrite_url() { printf '%s\n' "$1"; }
 po0_cloud_meta_get() { sed -n "s/^$1=//p" "$2"; }
 ''' + '\n'.join(function(name) for name in names) + '\n'
 
-    def test_internal_image_does_not_probe_rsync(self):
+    def test_internal_image_uses_one_metadata_probe(self):
         self.scratch.joinpath('po0-cloud-image.meta').write_text('old metadata\n')
         script = self.definitions('po0_prepare_cloud_image') + '''
-po0_cloud_resolve() { echo http://mirrors.tencentyun.com/almalinux/image.qcow2; }
-po0_cloud_probe() { echo 'Unexpected rsync probe' >&2; exit 92; }
+po0_cloud_resolve() { echo 'Unexpected second resolution' >&2; exit 92; }
+po0_cloud_probe() {
+    printf 'probe\n' >>"$tmp/probe-count"
+    printf 'url=%s\nsize=1234\nchecksum=unavailable\n' "$1" >"$2"
+    printf '%s\n' "$1"
+}
 po0_prepare_cloud_image http://mirrors.tencentyun.com/almalinux/image.qcow2
 printf 'selected=%s\n' "$finalos_img"
 '''
         result = self.shell(script)
         self.assertIn('selected=http://mirrors.tencentyun.com/almalinux/image.qcow2', result.stdout)
-        self.assertFalse(self.scratch.joinpath('po0-cloud-image.meta').exists())
+        self.assertIn('size=1234', self.scratch.joinpath('po0-cloud-image.meta').read_text())
+        self.assertEqual(self.scratch.joinpath('probe-count').read_text(), 'probe\n')
 
     def test_rsync_preparation_pins_metadata_without_fetching_image(self):
         script = self.definitions('po0_prepare_cloud_image', 'po0_cloud_expected_type',
@@ -137,14 +142,12 @@ po0_prepare_cloud_image rsync://mirror.example/image.qcow2
 '''
         result = self.shell(script, check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Could not read the rsync cloud image metadata', result.stderr)
+        self.assertIn('Could not read the cloud image metadata', result.stderr)
 
     def test_cloud_directory_discovery_uses_cloud_only_transport(self):
         script = self.definitions('set_var', 'setos') + '''
-is_in_china() { return 0; }
 is_use_cloud_image() { return 0; }
 is_distro_like_debian() { return 1; }
-is_in_windows() { return 1; }
 po0_prepare_cloud_image() { :; }
 po0_finish_cloud_metadata() { :; }
 test_url() { :; }

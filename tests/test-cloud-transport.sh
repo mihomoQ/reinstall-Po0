@@ -11,8 +11,27 @@ cat >"$scratch/bin/curl" <<'EOF'
 #!/bin/sh
 echo "curl $*" >>"$MOCK_LOG"
 [ "${MOCK_HTTP:-ok}" = ok ] || exit 22
-case " $* " in *' -fsSLI '*) exit 0 ;; esac
-printf '<a href="image.qcow2">image.qcow2</a>\n'
+case " $* " in *' -fsSLI '*)
+    printf 'HTTP/1.1 200 OK\r\n'
+    [ "${MOCK_HTTP_SIZE:-1024}" = unknown ] || printf 'Content-Length: %s\r\n' "${MOCK_HTTP_SIZE:-1024}"
+    exit 0 ;;
+esac
+output=
+while [ "$#" -gt 0 ]; do
+    case "$1" in -o) output=$2; shift ;; http*) url=$1 ;; esac
+    shift
+done
+case "$url" in
+*/image.qcow2)
+    echo "image-fetch $url" >>"$MOCK_LOG"
+    cp "$MOCK_PAYLOAD" "$output" ;;
+*/"${MOCK_MANIFEST_NAME:-SHA256SUMS}")
+    [ -f "$MOCK_MANIFEST" ] || exit 22
+    echo "manifest-fetch $url" >>"$MOCK_LOG"
+    cat "$MOCK_MANIFEST" ;;
+*/) printf '<a href="image.qcow2">image.qcow2</a>\n' ;;
+*) exit 22 ;;
+esac
 EOF
 cat >"$scratch/bin/rsync" <<'EOF'
 #!/bin/sh
@@ -53,12 +72,12 @@ export PATH PO0_ASSET_DIR="$scratch/assets"
 url=http://mirrors.tencentyun.com/ubuntu-cloud-images/releases/noble/release/image.qcow2
 
 : >"$MOCK_LOG"
-[ "$(po0_cloud_resolve "$url")" = "$url" ]
+[ "$(po0_cloud_probe "$url" "$scratch/initial-meta")" = "$url" ]
 ! grep -q '^rsync ' "$MOCK_LOG"
 echo 'PASS: an available internal image never contacts rsync'
 
 export MOCK_HTTP=missing MOCK_FAIL_HOST=mirror.nju.edu.cn
-resolved=$(po0_cloud_resolve "$url")
+resolved=$(po0_cloud_probe "$url" "$scratch/initial-meta")
 [ "$resolved" = rsync://rsync.mirrors.ustc.edu.cn/ubuntu-cloud-images/releases/noble/release/image.qcow2 ]
 echo 'PASS: unavailable internal image falls through failed campus source to next source'
 
@@ -153,3 +172,33 @@ echo 'PASS: software source rewriting has no rsync or network side effects'
 listing=$(po0_cloud_text http://mirrors.tencentyun.com/fedora/releases/43/Cloud/x86_64/images/)
 case "$listing" in *folder*) ;; *) exit 1 ;; esac
 echo 'PASS: cloud directory discovery also falls back over rsync'
+
+export MOCK_HTTP=ok
+unset MOCK_FAIL_HOST
+printf '%s  image.qcow2\n' "$digest" >"$MOCK_MANIFEST"
+: >"$MOCK_LOG"
+[ "$(po0_cloud_probe "$url" "$scratch/http-meta")" = "$url" ]
+[ "$(po0_cloud_meta_get size "$scratch/http-meta")" = 1024 ]
+[ "$(po0_cloud_meta_get sha256 "$scratch/http-meta")" = "$digest" ]
+[ "$(grep -c '^curl -fsSLI ' "$MOCK_LOG")" = 1 ]
+! grep -q '^image-fetch\|^rsync ' "$MOCK_LOG"
+po0_cloud_fetch "$url" "$scratch/http-image"
+po0_cloud_verify "$scratch/http-image" "$scratch/http-meta"
+[ "$(grep -c '^image-fetch ' "$MOCK_LOG")" = 1 ]
+printf x | dd of="$scratch/http-image" bs=1 count=1 conv=notrunc 2>/dev/null
+if po0_cloud_verify "$scratch/http-image" "$scratch/http-meta" >/dev/null 2>&1; then exit 1; fi
+echo 'PASS: HTTP uses one HEAD, bounded manifest, one image transfer and strict checksum'
+
+export MOCK_HTTP_SIZE=unknown
+po0_cloud_probe "$url" "$scratch/unknown-meta" >/dev/null
+[ "$(po0_cloud_meta_get size "$scratch/unknown-meta")" = unknown ]
+po0_cloud_verify "$MOCK_PAYLOAD" "$scratch/unknown-meta"
+unset MOCK_HTTP_SIZE
+printf 'invalid image.qcow2\n' >"$MOCK_MANIFEST"
+status=0
+po0_cloud_probe "$url" "$scratch/bad-http-meta" >/dev/null 2>&1 || status=$?
+[ "$status" = 2 ] && [ ! -e "$scratch/bad-http-meta" ]
+dd if=/dev/zero of="$MOCK_MANIFEST" bs=1048577 count=1 2>/dev/null
+po0_cloud_probe "$url" "$scratch/oversize-http-meta" >/dev/null
+[ "$(po0_cloud_meta_get checksum "$scratch/oversize-http-meta")" = unavailable ]
+echo 'PASS: HTTP missing Content-Length remains verifiable; malformed and oversized manifests never become trusted'

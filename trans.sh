@@ -25,7 +25,7 @@ fi
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 # shellcheck disable=SC2034
-SCRIPT_VERSION=PO0-20261028-3
+SCRIPT_VERSION=PO0-20261028-4
 
 TRUE=0
 FALSE=1
@@ -302,7 +302,7 @@ download_via_browser() {
         npm install \
         --no-save --no-package-lock \
         --prefix "/work" \
-        $(is_in_china && echo '--registry=https://registry.npmmirror.com') \
+        --registry=https://registry.npmmirror.com \
         playwright
 
     # 下载文件
@@ -746,11 +746,6 @@ is_any_ipv4_has_internet() {
     grep -q 1 /dev/netconf/*/ipv4_has_internet
 }
 
-is_in_china() {
-    # Po0 is configured explicitly; no geographic/network discovery is needed.
-    return 0
-}
-
 # 有 dhcpv4 不等于有网关，例如 vultr 纯 ipv6
 # 没有 dhcpv4 不等于是静态ip，可能是没有 ip
 is_dhcpv4() {
@@ -1018,11 +1013,7 @@ get_current_dns() {
     )
     # debian 11 initrd 没有 xargs awk
     # debian 12 initrd 没有 xargs
-    if false; then
-        grep '^nameserver' /etc/resolv.conf | awk '{print $2}' | grep -F "$mark" | cut -d '%' -f1
-    else
-        grep '^nameserver' /etc/resolv.conf | cut -d' ' -f2 | grep -F "$mark" | cut -d '%' -f1
-    fi
+    grep '^nameserver' /etc/resolv.conf | cut -d' ' -f2 | grep -F "$mark" | cut -d '%' -f1
 }
 
 to_upper() {
@@ -1862,9 +1853,6 @@ install_nixos() {
     # 也可以用 export NIX_CONFIG 和 --option substituters https://mirror.nju.edu.cn/nix-channels/store
     # https://help.mirrorz.org/nix-channels/
     configure_nix_substituters() {
-        if ! is_in_china; then
-            return
-        fi
 
         nix_conf=/etc/nix/nix.conf
         mkdir -p "$(dirname "$nix_conf")"
@@ -1914,20 +1902,12 @@ install_nixos() {
             nix_ver=$(xz -dc </os/store-paths.xz | grep -F 'vm-test-run-nix-upgrade' |
                 head -1 | awk -F- '{print $7}' | grep .)
             rm -f /os/store-paths.xz
-            if is_in_china; then
                 sh_mirror=https://mirror.nju.edu.cn/nix
-            else
-                sh_mirror=https://releases.nixos.org/nix
-            fi
             sh=$sh_mirror/nix-$nix_ver/install
         else
             # 最新版 nix 在 nixos-install 时可能会出问题
             # https://github.com/bin456789/reinstall/issues/451
-            if is_in_china; then
                 sh=https://mirror.nju.edu.cn/nix/latest/install
-            else
-                sh=https://nixos.org/nix/install
-            fi
         fi
 
         apk add xz
@@ -1969,9 +1949,7 @@ install_nixos() {
         nix_bootloader="boot.loader.grub.device = \"/dev/$xda\";"
     fi
 
-    if is_in_china; then
         nix_substituters="nix.settings.substituters = lib.mkForce [ \"$mirror/store\" ];"
-    fi
 
     if [ -e /os/swapfile ] && $keep_swap; then
         nix_swap="swapDevices = [ { device = \"/swapfile\"; size = $swap_size; } ];"
@@ -2161,10 +2139,8 @@ EOF
     fi
 
     # 设置 channel
-    if is_in_china; then
         nixos-enter --root /os -- \
             /run/current-system/sw/bin/nix-channel --add $mirror/nixos-$releasever nixos
-    fi
 
     # 清理
     nix-env -e '*'
@@ -2344,6 +2320,54 @@ basic_init() {
     add_frpc_systemd_service_if_need $os_dir
 }
 
+po0_configure_gentoo_sources() {
+    local os_dir=$1 make_conf=$1/etc/portage/make.conf
+    # Use the stage3's signed key package. Do not contact public WKD/keyservers
+    # or disable signature verification just because public HTTPS is blocked.
+    if ! grep -q GETUTO_EXTERNAL_REFRESH "$os_dir/usr/bin/getuto"; then
+        error_and_exit 'This Gentoo stage3 needs getuto with offline key refresh support.'
+        return 1
+    fi
+    [ -s "$os_dir/usr/share/openpgp-keys/gentoo-release.asc" ] || {
+        error_and_exit 'Gentoo stage3 is missing its release signing keys.'; return 1
+    }
+    mkdir -p "$os_dir/etc/portage/repos.conf" "$os_dir/etc/portage/binrepos.conf" || return
+    touch "$make_conf" || return
+    sed -i '/^# BEGIN Po0 sources$/,/^# END Po0 sources$/d' "$make_conf" || return
+    cat <<EOF >>"$make_conf"
+# BEGIN Po0 sources
+GENTOO_MIRRORS="$PO0_MIRROR_BASE/gentoo"
+FEATURES="getbinpkg force-mirror webrsync-gpg"
+PORTAGE_GPG_DIR="/etc/portage/webrsync-gnupg"
+PORTAGE_TRUST_HELPER="/usr/bin/env GETUTO_EXTERNAL_REFRESH=0 TERM=dumb /usr/bin/getuto"
+# END Po0 sources
+EOF
+    cat <<EOF >"$os_dir/etc/portage/repos.conf/gentoo.conf"
+[gentoo]
+location = /var/db/repos/gentoo
+sync-type = webrsync
+sync-webrsync-verify-signature = true
+sync-openpgp-key-path = /usr/share/openpgp-keys/gentoo-release.asc
+EOF
+}
+
+po0_initialize_gentoo_keys() {
+    local os_dir=$1
+    TERM=dumb GETUTO_EXTERNAL_REFRESH=0 chroot "$os_dir" getuto || return
+    # emerge-webrsync's GPG verifier requires ultimate trust for the release
+    # infrastructure key. Keep it separate from getuto's binary-package ring.
+    chroot "$os_dir" /bin/bash -s <<'EOF'
+set -euo pipefail
+keyring=/etc/portage/webrsync-gnupg
+install -d -m 700 "$keyring"
+gpg --homedir "$keyring" --batch --import /usr/share/openpgp-keys/gentoo-release.asc
+fingerprint=$(gpg --homedir "$keyring" --batch --with-colons --list-keys '<infrastructure@gentoo.org>' |
+    awk -F: '$1 == "fpr" && !found {print $10; found=1}')
+case "$fingerprint" in ''|*[!0-9A-Fa-f]*) exit 1 ;; esac
+printf '%s:6:\n' "$fingerprint" | gpg --homedir "$keyring" --batch --import-ownertrust
+EOF
+}
+
 install_arch_gentoo_aosc() {
     info "install $distro"
 
@@ -2521,8 +2545,11 @@ EOF
         # 挂载伪文件系统
         mount_pseudo_fs $os_dir
 
-        # 下载仓库，选择 profile
-        chroot $os_dir emerge-webrsync
+        # Configure the internal snapshot source before the first repository
+        # fetch. The same signed snapshot mechanism remains active afterwards.
+        po0_configure_gentoo_sources "$os_dir" || return
+        po0_initialize_gentoo_keys "$os_dir" || return
+        chroot "$os_dir" emerge-webrsync || return
         profile=$(
             # 筛选 stable systemd，再选择最短的
             if false; then
@@ -2545,10 +2572,13 @@ EOF
 MAKEOPTS="-j$(get_build_threads 2048)"
 EOF
 
-        # 设置 http repo + binpkg repo
-        # https://mirror.nju.edu.cn/gentoo/releases/amd64/autobuilds/current-stage3-amd64-systemd-mergedusr/stage3-amd64-systemd-mergedusr-20240317T170433Z.tar.xz
-        mirror_short=$(echo "$img" | sed 's,/releases/.*,,')
-        mirror_long=$(echo "$img" | sed 's,/autobuilds/.*,,')
+        # Package sources are independent of any custom stage3 image URL.
+        case "$(uname -m)" in
+        x86_64) mirror_arch=amd64 ;;
+        aarch64) mirror_arch=arm64 ;;
+        *) error_and_exit 'Unsupported Gentoo binary-package architecture.'; return 1 ;;
+        esac
+        mirror_long=$PO0_MIRROR_BASE/gentoo/releases/$mirror_arch
         profile_ver=$(chroot $os_dir eselect profile show | grep -Eo '/[0-9.]*/' | cut -d/ -f2)
 
         if [ "$(uname -m)" = x86_64 ]; then
@@ -2561,63 +2591,13 @@ EOF
             binpkg_type=arm64
         fi
 
-        cat <<EOF >>$os_dir/etc/portage/make.conf
-GENTOO_MIRRORS="$mirror_short"
-FEATURES="getbinpkg"
-EOF
-
         cat <<EOF >$os_dir/etc/portage/binrepos.conf/gentoobinhost.conf
 [binhost]
 priority = 9999
 sync-uri = $mirror_long/binpackages/$profile_ver/$binpkg_type
 EOF
 
-        # 下载公钥
-
-        # getuto 会判断是否有 ${TERM} 且 ${TERM} 不是 dumb
-        # 符合条件则 source /lib/gentoo/functions.sh 导入 ebegin 等方法
-        # 不符合条件则自行创建 ebegin 等方法
-
-        # /lib/gentoo/functions.sh 会判断是否有 ${RC_OPENRC_PID}
-        # 有的话就不会导入 /functions/openrc.sh，也就不会导入 ebegin 方法
-
-        # 在 ssh 里运行 /trans.sh 时，没有 ${RC_OPENRC_PID}，${TERM} 是 xterm
-        # 因此 chroot $os_dir getuto 时不会报错
-
-        # 在 locald 里运行 /trans.sh 时，有 ${RC_OPENRC_PID}，${TERM} 是 linux
-        # 因此 chroot $os_dir getuto 时会报错说 ebegin: command not found
-
-        # 有两个解决方法
-        if true; then
-            TERM=dumb chroot $os_dir getuto
-        else
-            env -u RC_OPENRC_PID chroot $os_dir getuto
-        fi
-
         set_locale
-
-        # 安装 git 会升级 glibc，此时 /etc/locale.gen 不能为空，否则会提示生成所有 locale
-        # Generating all locales; edit /etc/locale.gen to save time/space
-        chroot $os_dir emerge dev-vcs/git
-
-        # 设置 git repo
-        if is_in_china; then
-            git_uri=https://mirror.nju.edu.cn/git/gentoo-portage.git
-        else
-            # github 不支持 ipv6
-            is_any_ipv4_has_internet && git_uri=https://github.com/gentoo-mirror/gentoo.git ||
-                git_uri=https://anongit.gentoo.org/git/repo/gentoo.git
-        fi
-
-        mkdir -p $os_dir/etc/portage/repos.conf
-        cat <<EOF >$os_dir/etc/portage/repos.conf/gentoo.conf
-[gentoo]
-location = /var/db/repos/gentoo
-sync-type = git
-sync-uri = $git_uri
-EOF
-        rm -rf $os_dir/var/db/repos/gentoo
-        chroot $os_dir emerge --sync
 
         # 一次性安装所有包，可减少软件包重复 rebuild ?
         local pkgs=
@@ -2989,13 +2969,11 @@ xda() {
 }
 
 create_part() {
-    # Size/source checks for rsync must have completed before wipefs below.
-    case "${img:-}" in
-    rsync://*)
+    # Every QCOW cloud image must pass size/source checks before wipefs.
+    if is_use_cloud_image && [ "${img_type:-}" = qemu ]; then
         [ "${po0_cloud_prepared:-}" = "$img" ] ||
-            error_and_exit 'The rsync cloud image was not validated before partitioning.'
-        ;;
-    esac
+            error_and_exit 'The cloud image was not validated before partitioning.'
+    fi
     # 除了 dd 都会用到
     info "Create Part"
 
@@ -4957,7 +4935,7 @@ po0_cache_compressed_cloud() (
     required_kb=$(((po0_cloud_image_bytes + 1023) / 1024))
     if [ "$memory_kb" -lt "$((required_kb + 512 * 1024))" ] ||
         [ "$free_kb" -lt "$((required_kb + 1024))" ]; then
-        error_and_exit 'Compressed rsync image needs RAM for the archive plus 512 MiB; use an uncompressed QCOW2 image on this machine.'
+        error_and_exit 'Compressed cloud image needs RAM for the archive plus 512 MiB; use an uncompressed QCOW2 image on this machine.'
         return 1
     fi
     po0_cloud_ram_cache=$(mktemp "$cache_dir/image.XXXXXX") || return
@@ -4993,7 +4971,17 @@ po0_cache_compressed_cloud() (
 )
 
 po0_prepare_rsync_cloud() {
-    case "${img:-}" in rsync://*) ;; *) return 0 ;; esac
+    # `/trans.sh alpine` explicitly selects the rescue installation. Its kernel
+    # command line may still contain the failed cloud image's URL and metadata.
+    # Do not validate or fetch that obsolete image when installing Alpine.
+    if [ "${distro:-}" = alpine ] && ! is_use_cloud_image; then
+        return 0
+    fi
+    case "${img:-}" in
+    rsync://*) ;;
+    http://*|https://*) is_use_cloud_image && [ "${img_type:-}" = qemu ] || return 0 ;;
+    *) return 0 ;;
+    esac
     po0_cloud_prepared=
     if ! is_use_cloud_image || [ "${img_type:-}" != qemu ]; then
         error_and_exit 'Rsync is supported for QCOW cloud images only, not raw DD or ISO streaming.'
@@ -5032,12 +5020,19 @@ po0_prepare_rsync_cloud() {
         } ;;
     *) error_and_exit 'Invalid cloud image checksum mode.'; return 1 ;;
     esac
-    case "$po0_cloud_image_bytes" in ''|*[!0-9]*)
+    case "$po0_cloud_image_bytes" in
+    unknown)
+        case "$img" in http://*|https://*) ;; *) return 1 ;; esac
+        [ -z "${img_type_warp:-}" ] || {
+            error_and_exit 'Compressed HTTP cloud image needs Content-Length for RAM and disk sizing.'; return 1
+        } ;;
+    ''|*[!0-9]*)
         error_and_exit 'Invalid cloud image size metadata.'; return 1 ;;
+    *)
+        [ "$po0_cloud_image_bytes" -gt 0 ] || {
+            error_and_exit 'Cloud image size must be positive.'; return 1
+        } ;;
     esac
-    [ "$po0_cloud_image_bytes" -gt 0 ] || {
-        error_and_exit 'Cloud image size must be positive.'; return 1
-    }
 
     # Plain images use the exact listed size. Compressed images are downloaded
     # once into RAM and measured here, before any target partition changes.
@@ -5054,10 +5049,13 @@ po0_prepare_rsync_cloud() {
     esac
     # Check the source before destructive operations. APK stays on the internal
     # repository; only the cloud image and its small manifest use rsync.
-    apk add rsync || return
-    remote_size=$(po0_cloud_rsync_size "$img") || return
-    [ "$remote_size" = "$po0_cloud_image_bytes" ] || {
-        error_and_exit 'The rsync cloud image changed size after host preparation.'
+    case "$img" in
+    rsync://*) apk add rsync || return; remote_size=$(po0_cloud_rsync_size "$img") || return ;;
+    *) apk add curl || return; remote_size=$(po0_cloud_http_size "$img") || return ;;
+    esac
+    [ "$remote_size" = unknown ] || [ "$po0_cloud_image_bytes" = unknown ] ||
+        [ "$remote_size" = "$po0_cloud_image_bytes" ] || {
+        error_and_exit 'The cloud image changed size after host preparation.'
         return 1
     }
     if [ -n "${img_type_warp:-}" ]; then
@@ -5066,7 +5064,13 @@ po0_prepare_rsync_cloud() {
         po0_cloud_ram_cache=${cache_result#* }
     fi
     storage_bytes=$po0_cloud_expanded_bytes
-    po0_cloud_installer_mb=$(get_part_size_mb_for_file_size_b "$storage_bytes") || return
+    if [ "$storage_bytes" = unknown ]; then
+        # Preserve the upstream 2 GiB staging fallback for HTTP without a size.
+        storage_bytes=0
+        po0_cloud_installer_mb=2048
+    else
+        po0_cloud_installer_mb=$(get_part_size_mb_for_file_size_b "$storage_bytes") || return
+    fi
     if is_efi; then boot_mb=101; else boot_mb=2; fi
     # This is only a hard lower bound, not a guarantee that a distro's files
     # fit. Reject impossible staging layouts before wipefs erases the disk.
@@ -5085,9 +5089,9 @@ po0_prepare_rsync_cloud() {
 
 po0_download_rsync_qcow() {
     local target=$1 meta=${PO0_CLOUD_META_FILE:-/configs/po0-cloud-image.meta}
-    local expanded_actual image_info
+    local expanded_actual
     [ "${po0_cloud_prepared:-}" = "$img" ] || {
-        error_and_exit 'Rsync cloud image was not prepared.'; return 1
+        error_and_exit 'Cloud image was not prepared.'; return 1
     }
     if [ -n "${img_type_warp:-}" ]; then
         [ -n "${po0_cloud_ram_cache:-}" ] && [ -f "$po0_cloud_ram_cache" ] || {
@@ -5098,7 +5102,7 @@ po0_download_rsync_qcow() {
             set -o pipefail
             po0_cloud_unpack "$po0_cloud_ram_cache" >"$target"
         ); then
-            error_and_exit 'Failed to unpack the verified rsync cloud image.'
+            error_and_exit 'Failed to unpack the verified cloud image.'
             return 1
         fi
         expanded_actual=$(wc -c <"$target" | tr -d '[:space:]')
@@ -5112,6 +5116,11 @@ po0_download_rsync_qcow() {
         po0_cloud_fetch "$img" "$target" || return
         po0_cloud_verify "$target" "$meta" || return
     fi
+    po0_check_qcow "$target"
+}
+
+po0_check_qcow() {
+    local target=$1 image_info
     # Force QCOW2: auto-detection treats arbitrary text as a successful raw
     # image. Reject dependencies on other local files before qemu-nbd opens it.
     image_info=$(qemu-img info -f qcow2 --output=json "$target") || return
@@ -5130,17 +5139,9 @@ download_qcow() {
     mount /dev/disk/by-label/installer /installer || return
 
     qcow_file=/installer/cloud_image.qcow2
-    if [[ "$img" = rsync://* ]]; then
-        po0_download_rsync_qcow "$qcow_file" || return
-    elif [ -n "$img_type_warp" ]; then
-        # 边下载边解压，单线程下载
-        # 用官方 wget ，带进度条
-        apk add wget
-        wget $img -O- | pipe_extract >$qcow_file
-    else
-        # 多线程下载
-        download "$img" "$qcow_file"
-    fi
+    # Both HTTP and rsync use the same metadata, single payload transfer,
+    # decompression-error propagation and strict QCOW2 validation path.
+    po0_download_rsync_qcow "$qcow_file" || return
 }
 
 connect_qcow() {
@@ -5199,57 +5200,12 @@ get_part_size_mb_for_file_size_b() {
 }
 
 get_cloud_image_part_size() {
-    case "${img:-}" in
-    rsync://*)
-        [ "${po0_cloud_prepared:-}" = "$img" ] || {
-            error_and_exit 'Rsync image sizing requires validated preparation metadata.'
-            return 1
-        }
-        # The compressed archive stays in RAM; only expanded QCOW2 uses disk.
-        echo "${po0_cloud_installer_mb}MiB"
-        return
-        ;;
-    esac
-    # 7
-    # https://cloud.centos.org/centos/7/images/CentOS-7-x86_64-GenericCloud-2211.qcow2c 400m
-
-    # 8
-    # https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.qcow2 600m
-    # https://download.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud-Base.latest.x86_64.qcow2 1.8g
-    # https://yum.oracle.com/templates/OracleLinux/OL8/u9/x86_64/OL8U9_x86_64-kvm-b219.qcow2 1g
-    # https://rhel-8.10-x86_64-kvm.qcow2 1g
-
-    # 9
-    # https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2 1.2g
-    # https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2 600m
-    # https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2 600m
-    # https://yum.oracle.com/templates/OracleLinux/OL9/u3/x86_64/OL9U3_x86_64-kvm-b220.qcow2 600m
-    # https://rhel-9.4-x86_64-kvm.qcow2 900m
-
-    # 10
-    # https://cloud.centos.org/centos/10-stream/x86_64/images/CentOS-Stream-GenericCloud-10-latest.x86_64.qcow2 900m
-
-    # https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/cloud/nocloud_alpine-3.19.1-x86_64-uefi-cloudinit-r0.qcow2 200m
-    # https://kali.download/cloud-images/current/kali-linux-2024.1-cloud-genericcloud-amd64.tar.xz 200m
-    # https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-Minimal-VM.x86_64-Cloud.qcow2 300m
-    # https://download.opensuse.org/distribution/leap/15.5/appliances/openSUSE-Leap-15.5-Minimal-VM.aarch64-Cloud.qcow2 300m
-    # https://mirror.fcix.net/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-40-1.14.qcow2 400m
-    # https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2 500m
-    # https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2 500m
-    # https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img 500m
-    # https://gentoo.osuosl.org/experimental/amd64/openstack/gentoo-openstack-amd64-systemd-latest.qcow2 800m
-
-    # openeuler 是 .qcow2.xz，要解压后才知道 qcow2 大小
-    if [ "$distro" = openeuler ]; then
-        echo 3GiB
-    elif size_bytes=$(get_http_file_size "$img"); then
-        # 缩小 btrfs 需要写 qcow2 ，实测写入后只多了 1M，因此不用特殊处理
-        echo "$(get_part_size_mb_for_file_size_b $size_bytes)MiB"
-    else
-        # 如果没获取到文件大小
-        echo "Could not get cloud image size in http response." >&2
-        echo 2GiB
-    fi
+    [ "${po0_cloud_prepared:-}" = "$img" ] || {
+        error_and_exit 'Cloud image sizing requires validated preparation metadata.'
+        return 1
+    }
+    # Compressed archives stay in RAM; only expanded QCOW2 uses this partition.
+    echo "${po0_cloud_installer_mb}MiB"
 }
 
 # Rewrite actual package-manager URLs, including Debian/Ubuntu security suites.
@@ -5449,21 +5405,6 @@ del_exist_sysconfig_NetworkManager_config() {
     rm -rf $os_dir/etc/NetworkManager/system-connections/*.nmconnection
     rm -rf $os_dir/etc/sysconfig/network-scripts/ifcfg-*
 
-    # 1. 修复 cloud-init 添加了 IPV*_FAILURE_FATAL / may-fail=false
-    #    甲骨文 dhcpv6 获取不到 IP 将视为 fatal，原有的 ipv4 地址也会被删除
-    # 2. 修复 dhcpv6 下，ifcfg 添加了 IPV6_AUTOCONF=no 导致无法获取网关
-    # 3. 修复 dhcpv6 下，NM method=dhcp 导致无法获取网关
-    if false; then
-        ci_file=$os_dir/etc/cloud/cloud.cfg.d/99_fallback.cfg
-
-        insert_into_file $ci_file after '^runcmd:' <<EOF
-  - sed -i '/^IPV[46]_FAILURE_FATAL=/d' /etc/sysconfig/network-scripts/ifcfg-* || true
-  - sed -i '/^may-fail=/d' /etc/NetworkManager/system-connections/*.nmconnection || true
-  - for f in /etc/sysconfig/network-scripts/ifcfg-*; do grep -q '^DHCPV6C=yes' "\$f" && sed -i '/^IPV6_AUTOCONF=no/d' "\$f"; done
-  - sed -i 's/^method=dhcp/method=auto/' /etc/NetworkManager/system-connections/*.nmconnection || true
-  - systemctl is-enabled NetworkManager && systemctl restart NetworkManager || true
-EOF
-    fi
 }
 
 install_fnos() {
@@ -6694,11 +6635,7 @@ create_win_change_rdp_port_script() {
 # virt-what 可能会输出多行结果，因此用 grep
 
 get_aws_repo() {
-    if is_in_china >&2; then
         echo https://s3.cn-north-1.amazonaws.com.cn/ec2-windows-drivers-downloads-cn
-    else
-        echo https://s3.amazonaws.com/ec2-windows-drivers-downloads
-    fi
 }
 
 # 将 AC/SAC 版本号 转换为 LTSC 版本号
@@ -6912,11 +6849,7 @@ get_intel_download_url() {
     local id=$1
     local file_regex=$2
 
-    if is_in_china; then
         local url=https://www.intel.cn/content/www/cn/zh/download/$id.html
-    else
-        local url=https://www.intel.com/content/www/us/en/download/$id.html
-    fi
 
     # 将双引号替换成换行符，使每个链接占一行
     # intel 禁止了 wget 下载网页
@@ -7885,11 +7818,7 @@ EOF
 
             local ROCKY_RELEASEVER=10
 
-            if is_in_china; then
                 local rocky_mirror=https://mirror.nju.edu.cn/rocky
-            else
-                local rocky_mirror=https://dl.rockylinux.org/pub/rocky
-            fi
             local rocky_mirror_os="$rocky_mirror/$ROCKY_RELEASEVER/AppStream/x86_64/os"
 
             primary_xml_gz=$(wget -O- "$rocky_mirror_os/repodata/repomd.xml" |
@@ -8910,101 +8839,6 @@ set_max_sectors_kb_for_tencent_cloud_persist() {
     fi
 }
 
-install_redhat_ubuntu() {
-    info "Download iso installer"
-
-    # 安装 grub2
-    if is_efi; then
-        # 注意低版本的grub无法启动f38 arm的内核
-        # https://forums.fedoraforum.org/showthread.php?330104-aarch64-pxeboot-vmlinuz-file-format-changed-broke-PXE-installs
-        apk add grub-efi efibootmgr
-        grub-install --efi-directory=/os/boot/efi --boot-directory=/os/boot
-    else
-        apk add grub-bios
-        grub-install --boot-directory=/os/boot /dev/$xda
-    fi
-
-    # 重新整理 extra，因为grub会处理掉引号，要重新添加引号
-    extra_cmdline=''
-    for var in $(grep -o '\bextra_[^ ]*' /proc/cmdline | xargs); do
-        if [[ "$var" = "extra_main_disk=*" ]]; then
-            # 重新记录主硬盘
-            refind_main_disk
-            extra_cmdline="$extra_cmdline extra_main_disk=$main_disk"
-        else
-            extra_cmdline="$extra_cmdline $(echo $var | sed -E "s/(extra_[^=]*)=(.*)/\1='\2'/")"
-        fi
-    done
-
-    # 安装红帽系时，只有最后一个有安装界面显示
-    # https://anaconda-installer.readthedocs.io/en/latest/boot-options.html#console
-    console_cmdline=$(get_ttys console=)
-    grub_cfg=/os/boot/grub/grub.cfg
-
-    # 新版grub不区分linux/linuxefi
-    # shellcheck disable=SC2154
-    if [ "$distro" = "ubuntu" ]; then
-        download $iso /os/installer/ubuntu.iso
-        mkdir -p /iso
-        mount -o ro /os/installer/ubuntu.iso /iso
-
-        # 内核风味
-        kernel=$(get_ubuntu_kernel_flavor)
-
-        # 要安装的版本
-        # https://canonical-subiquity.readthedocs-hosted.com/en/latest/reference/autoinstall-reference.html#id
-        # 20.04 不能选择 minimal ，也没有 install-sources.yaml
-        source_id=
-        if [ -f /iso/casper/install-sources.yaml ]; then
-            ids=$(grep id: /iso/casper/install-sources.yaml | awk '{print $2}')
-            if [ "$(echo "$ids" | wc -l)" = 1 ]; then
-                source_id=$ids
-            else
-                [ "$minimal" = 1 ] && v= || v=-v
-                source_id=$(echo "$ids" | grep $v '\-minimal')
-
-                if [ "$(echo "$source_id" | wc -l)" -gt 1 ]; then
-                    error_and_exit "find multi source id."
-                fi
-            fi
-        fi
-
-        # 正常写法应该是 ds="nocloud-net;s=https://xxx/" 但是甲骨文云的ds更优先，自己的ds根本无访问记录
-        # $seed 是 https://xxx/
-        cat <<EOF >$grub_cfg
-        set timeout=5
-        menuentry "reinstall" {
-            # https://bugs.launchpad.net/ubuntu/+source/grub2/+bug/1851311
-            # rmmod tpm
-            insmod all_video
-            insmod search
-            insmod loopback
-            search --no-floppy --label --set=root installer
-            loopback loop /ubuntu.iso
-            linux (loop)/casper/vmlinuz iso-scan/filename=/ubuntu.iso autoinstall noprompt noeject cloud-config-url=$ks $extra_cmdline extra_kernel=$kernel extra_source_id=$source_id --- $console_cmdline
-            initrd (loop)/casper/initrd
-        }
-EOF
-    else
-        download $vmlinuz /os/vmlinuz
-        download $initrd /os/initrd.img
-        download $squashfs /os/installer/install.img
-
-        cat <<EOF >$grub_cfg
-        set timeout=5
-        menuentry "reinstall" {
-            insmod all_video
-            insmod search
-            search --no-floppy --label --set=root os
-            linux /vmlinuz inst.stage2=hd:LABEL=installer:/install.img inst.ks=$ks $extra_cmdline $console_cmdline
-            initrd /initrd.img
-        }
-EOF
-    fi
-
-    cat "$grub_cfg"
-}
-
 trans() {
     info "start trans"
 
@@ -9115,7 +8949,6 @@ trans() {
             create_part
             mount_part_for_iso_installer
             case "$distro" in
-            centos | almalinux | rocky | fedora | ubuntu | redhat) install_redhat_ubuntu ;;
             windows) install_windows ;;
             esac
             ;;

@@ -124,14 +124,13 @@ class HostPreparation(unittest.TestCase):
         self.assertFalse((target / "po0-assets/po0.conf").exists())
 
     def test_debian_12_and_13_urls_and_security_cmdline(self):
-        names = ("set_var", "setos", "is_in_china", "is_use_cloud_image",
+        names = ("set_var", "setos", "is_use_cloud_image",
                  "is_distro_like_debian", "is_distro_like_redhat", "is_need_quote",
                  "build_nextos_cmdline", "build_extra_cmdline")
         script = 'set -e\n. ./po0-lib.sh\n' + "\n".join(map(function, names))
         script += """
 info() { :; }
 is_virt() { return 0; }
-is_in_windows() { return 1; }
 is_grub_dir_linked() { return 1; }
 error_and_exit() { printf '%s\\n' "$*" >&2; exit 1; }
 basearch=x86_64
@@ -208,6 +207,17 @@ usage_and_exit() { exit 91; }
         self.assertLess(packing.index('gzip -t "$tmp/reinstall-initrd.new"'),
                         packing.index('mv "$tmp/reinstall-initrd.new" "$tmp/reinstall-initrd"'))
         self.assertGreaterEqual(packing.count("set -o pipefail"), 2)
+
+    def test_source_platform_requires_linux_while_windows_target_is_retained(self):
+        guard = SOURCE[SOURCE.index('# Po0 panel templates'):SOURCE.index('THIS_SCRIPT=')]
+        for platform, allowed in (('Linux', True), ('CYGWIN_NT-10.0', False), ('Darwin', False)):
+            with self.subTest(platform=platform):
+                result = self.shell("uname() { printf '%s\\n' " + shlex.quote(platform) + "; }\n" + guard,
+                                    check=False)
+                self.assertEqual(result.returncode == 0, allowed)
+        self.assertNotIn('is_in_windows', SOURCE)
+        self.assertNotIn('wmic()', SOURCE)
+        self.assertIn('setos_windows()', SOURCE)
 
 
 if __name__ == "__main__":

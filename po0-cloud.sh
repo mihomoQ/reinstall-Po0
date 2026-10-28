@@ -72,25 +72,18 @@ po0_cloud_rsync_size() (
         END {if (count == 1 && value > 0) print value; else exit 1}'
 )
 
-po0_cloud_resolve() (
-    candidates=$(po0_cloud_candidates "$1") || exit
-    for candidate in $candidates; do
-        echo "Cloud image source: $candidate" >&2
-        case "$candidate" in
-            http://*|https://*)
-                po0_need_curl >&2 || exit
-                if command curl -fsSLI --connect-timeout 5 --max-time 12 "$candidate" >/dev/null; then
-                    printf '%s\n' "$candidate"; exit 0
-                fi ;;
-            rsync://*)
-                if po0_cloud_rsync_size "$candidate" >/dev/null; then
-                    printf '%s\n' "$candidate"; exit 0
-                fi ;;
-            *) echo "Unsupported cloud-image URL: $candidate" >&2 ;;
-        esac
-    done
-    echo 'No available internal/rsync copy of this cloud image.' >&2
-    exit 1
+po0_cloud_http_size() (
+    po0_need_curl >&2 || exit
+    headers=$(command curl -fsSLI --connect-timeout 5 --max-time 12 "$1") || exit
+    # Only the final response's Content-Length describes the selected object.
+    printf '%s\n' "$headers" | tr -d '\r' | awk '
+        /^HTTP\// {size="unknown"}
+        tolower($1) == "content-length:" {size=$2}
+        END {
+            if (size == "" || size == "unknown") print "unknown"
+            else if (size ~ /^[0-9]+$/ && size > 0) {sub(/^0+/, "", size); print size}
+            else exit 1
+        }'
 )
 
 po0_cloud_fetch() {
@@ -160,13 +153,27 @@ po0_cloud_checksum() (
         manifest_url=$directory/$manifest
         # Even an unusual image filename cannot make this fetch the image.
         [ "$manifest_url" != "$source" ] || continue
-        size=$(po0_cloud_rsync_size "$manifest_url" 2>/dev/null) || continue
-        [ "$size" -le 1048576 ] || continue
-        # Both the advertised and received sizes are bounded. --max-size also
-        # handles a manifest replaced by a large file after the listing.
         rm -f "$scratch/manifest"
-        if ! command rsync -4 -L --no-motd --max-size=1048576 --contimeout=5 --timeout=10 \
-            -- "$manifest_url" "$scratch/manifest" >/dev/null 2>&1; then continue; fi
+        case "$manifest_url" in
+        rsync://*)
+            size=$(po0_cloud_rsync_size "$manifest_url" 2>/dev/null) || continue
+            [ "$size" -le 1048576 ] || continue
+            if ! command rsync -4 -L --no-motd --max-size=1048576 --contimeout=5 --timeout=10 \
+                -- "$manifest_url" "$scratch/manifest" >/dev/null 2>&1; then continue; fi
+            ;;
+        http://*|https://*)
+            # Bound received bytes even on older curl versions when the server
+            # omits Content-Length. Preserve curl failures across the pipe.
+            po0_need_curl >&2 || exit
+            {
+                if command curl -fsSL --connect-timeout 5 --max-time 15 --max-filesize 1048576 "$manifest_url" 2>/dev/null; then
+                    echo 0 >"$scratch/status"
+                else echo 1 >"$scratch/status"; fi
+            } | head -c 1048577 >"$scratch/manifest"
+            [ "$(cat "$scratch/status")" = 0 ] || continue
+            ;;
+        *) exit 1 ;;
+        esac
         [ -f "$scratch/manifest" ] || continue
         [ "$(wc -c <"$scratch/manifest")" -le 1048576 ] || continue
         if digest=$(po0_cloud_checksum_parse "$filename" "$scratch/manifest"); then
@@ -190,8 +197,12 @@ po0_cloud_probe() (
     rm -f "$metadata"
     candidates=$(po0_cloud_candidates "$requested") || exit
     for source in $candidates; do
-        case "$source" in rsync://*) ;; *) continue ;; esac
-        size=$(po0_cloud_rsync_size "$source") || continue
+        echo "Cloud image source: $source" >&2
+        case "$source" in
+        rsync://*) size=$(po0_cloud_rsync_size "$source") || continue ;;
+        http://*|https://*) size=$(po0_cloud_http_size "$source") || continue ;;
+        *) continue ;;
+        esac
         printf 'url=%s\nsize=%s\n' "$source" "$size" >"$metadata" || exit
         if digest=$(po0_cloud_checksum "$source"); then
             printf 'checksum=sha256\nsha256=%s\n' "$digest" >>"$metadata" || exit
@@ -208,21 +219,33 @@ po0_cloud_probe() (
         printf '%s\n' "$source"
         exit 0
     done
-    echo 'No available rsync cloud image to prepare.' >&2
+    echo 'No available internal/rsync cloud image to prepare.' >&2
     exit 1
 )
 
 po0_cloud_verify() (
     image=$1; metadata=$2
     size=$(po0_cloud_meta_get size "$metadata") || exit
-    case "$size" in ''|*[!0-9]*) echo 'Invalid pinned image size.' >&2; exit 1 ;; esac
-    [ "$size" -gt 0 ] || exit 1
-    [ -f "$image" ] && [ "$(wc -c <"$image")" -eq "$size" ] || {
-        echo 'Cloud image size differs from the prepared listing.' >&2; exit 1
-    }
+    [ -f "$image" ] && [ -s "$image" ] || exit 1
+    case "$size" in
+    unknown)
+        source=$(po0_cloud_meta_get url "$metadata") || exit
+        case "$source" in http://*|https://*) ;; *) exit 1 ;; esac
+        echo 'No HTTP Content-Length was available; checking checksum and QCOW2 structure.' >&2
+        ;;
+    ''|*[!0-9]*) echo 'Invalid pinned image size.' >&2; exit 1 ;;
+    *)
+        [ "$size" -gt 0 ] || exit 1
+        [ "$(wc -c <"$image")" -eq "$size" ] || {
+            echo 'Cloud image size differs from the prepared listing.' >&2; exit 1
+        } ;;
+    esac
     # Absence is allowed; malformed or duplicate SHA256 entries are not.
     if ! grep -q '^sha256=' "$metadata"; then
-        echo 'No SHA256 manifest was available; image size verified.' >&2
+        if [ "$(po0_cloud_meta_get checksum "$metadata" 2>/dev/null)" = sha256 ]; then
+            echo 'Missing required SHA256 digest.' >&2; exit 1
+        fi
+        echo 'No SHA256 manifest was available; transfer and QCOW2 checks remain required.' >&2
         exit 0
     fi
     digest=$(po0_cloud_meta_get sha256 "$metadata") || exit

@@ -35,6 +35,7 @@ qemu-img() {
     esac
 }
 po0_cloud_rsync_size() { printf 'list:%s\n' "$1" >>"$TEST_LOG"; printf '%s\n' "$REMOTE_BYTES"; }
+po0_cloud_http_size() { printf 'head:%s\n' "$1" >>"$TEST_LOG"; printf '%s\n' "$REMOTE_BYTES"; }
 po0_cloud_fetch() {
     printf 'fetch:%s\n' "$1" >>"$TEST_LOG"
     [ "$FAIL_FETCH" = 0 ] || return 17
@@ -76,9 +77,15 @@ assert_no_fetch() { ! grep -q '^fetch:' "$TEST_LOG" || fail 'unexpected image do
 
 reset_case
 img=http://mirrors.tencentyun.com/almalinux/9/cloud/image.qcow2
+write_meta
 po0_prepare_rsync_cloud
-[ ! -s "$TEST_LOG" ] || fail 'HTTP image caused rsync/package operations'
-echo 'PASS: internal HTTP path bypasses rsync preparation'
+assert_no_fetch
+[ "$po0_cloud_prepared" = "$img" ] || fail 'HTTP metadata not checked'
+! grep -q '^list:\|apk:add rsync' "$TEST_LOG" || fail 'HTTP used rsync'
+po0_download_rsync_qcow "$scratch/output/http.qcow2"
+assert_one_fetch
+grep -Fq 'qemu:check -f qcow2 ' "$TEST_LOG" || fail 'HTTP image skipped QCOW validation'
+echo 'PASS: internal HTTP path uses shared preparation and full validation'
 reset_case
 po0_prepare_rsync_cloud
 [ "$po0_cloud_prepared" = "$img" ] || fail 'preparation marker missing'
@@ -200,6 +207,49 @@ expect_failure 'impossible compressed partition' po0_prepare_rsync_cloud
 [ -z "$(ls -A "$PO0_CLOUD_CACHE_DIR")" ] || fail 'disk rejection left RAM cache'
 echo 'PASS: image, boot and minimum OS space must fit before partitioning'
 
+for damage in checksum format backing; do
+    reset_case
+    img=http://mirror.example/cloud.qcow2
+    write_meta
+    po0_prepare_rsync_cloud
+    case "$damage" in
+    checksum) printf 'damaged bytes' >"$scratch/damaged-http"; FIXTURE_IMAGE="$scratch/damaged-http" ;;
+    format) FAIL_QEMU_INFO=1 ;;
+    backing) QEMU_INFO='{"backing-filename":"external.qcow2"}' ;;
+    esac
+    expect_failure "HTTP $damage" po0_download_rsync_qcow "$scratch/output/http-$damage.qcow2"
+done
+compressed_case
+img=http://mirror.example/cloud.qcow2.gz
+write_meta
+po0_prepare_rsync_cloud
+assert_one_fetch
+po0_download_rsync_qcow "$scratch/output/http-expanded.qcow2"
+assert_one_fetch
+cmp "$scratch/plain-image" "$scratch/output/http-expanded.qcow2"
+compressed_case
+img=http://mirror.example/cloud.qcow2.gz
+write_meta
+FAIL_FETCH=1
+expect_failure 'HTTP compressed transfer failure' po0_prepare_rsync_cloud
+[ -z "$(ls -A "$PO0_CLOUD_CACHE_DIR")" ] || fail 'HTTP transfer failure left cache'
+compressed_case
+img=http://mirror.example/cloud.qcow2.gz
+write_meta
+sed -i 's/^size=.*/size=unknown/' "$PO0_CLOUD_META_FILE"
+expect_failure 'compressed HTTP without Content-Length' po0_prepare_rsync_cloud
+assert_no_fetch
+reset_case
+img=http://mirror.example/cloud.qcow2
+write_meta
+sed -i 's/^size=.*/size=unknown/' "$PO0_CLOUD_META_FILE"
+REMOTE_BYTES=unknown
+po0_prepare_rsync_cloud
+[ "$(get_cloud_image_part_size)" = 2048MiB ] || fail 'unknown HTTP size reservation changed'
+po0_download_rsync_qcow "$scratch/output/http-unknown.qcow2"
+assert_one_fetch
+echo 'PASS: HTTP rejects bad hashes/format/dependencies and compressed failures; both formats transfer once'
+
 # Real dispatch prefix with a sentinel instead of actual partition operations.
 mod_motd() { :; }
 ensure_service_started() { :; }
@@ -256,3 +306,25 @@ status=0
 [ "$status" -eq 73 ] || fail 'download failure did not propagate from trans'
 ! grep -q WOULD_INSTALL "$TEST_LOG" || fail 'download failure reached installation'
 echo 'PASS: download failure blocks installation even when errexit is disabled'
+
+# A manual `/trans.sh alpine` keeps the original kernel command line's img URL.
+# Only that explicit rescue target may bypass obsolete cloud metadata; raw/DD
+# rsync must still fail instead of reaching a disk-writing path.
+install_alpine() { echo WOULD_INSTALL_ALPINE >>"$TEST_LOG"; exit 89; }
+reset_case
+distro=alpine
+cloud_image=0
+rm "$PO0_CLOUD_META_FILE"
+status=0
+( trans ) >"$scratch/alpine-rescue.log" 2>&1 || status=$?
+[ "$status" -eq 89 ] || fail 'Alpine rescue was blocked by obsolete rsync image state'
+grep -q WOULD_INSTALL_ALPINE "$TEST_LOG" || fail 'Alpine rescue dispatch missing'
+assert_no_fetch
+! grep -q '^list:\|^head:\|apk:add rsync\|apk:add curl\|WOULD_PARTITION' "$TEST_LOG" || fail 'Alpine rescue touched obsolete cloud state'
+reset_case
+distro=dd
+cloud_image=0
+img_type=raw
+expect_failure 'raw DD rsync remains rejected' trans
+! grep -q 'WOULD_PARTITION\|WOULD_INSTALL' "$TEST_LOG" || fail 'raw DD rsync reached disk operations'
+echo 'PASS: explicit Alpine rescue ignores stale cloud state; raw DD rsync stays blocked'

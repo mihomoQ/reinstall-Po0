@@ -1,10 +1,6 @@
 debian.cfg
 deprecated/cloud-init-fix-onlink.sh
 deprecated/cloud-init.yaml
-deprecated/redhat.cfg
-deprecated/resize.sh
-deprecated/ubuntu-storage-early.sh
-deprecated/ubuntu.yaml
 download-via-browser.js
 fix-eth-name.initd
 fix-eth-name.service
@@ -17,7 +13,6 @@ po0-assets.list
 po0-chrony.sh
 po0-cloud.sh
 po0-lib.sh
-reinstall.bat
 reinstall.sh
 trans.sh
 ttys.sh
@@ -31,4 +26,3 @@ windows-resize.bat
 windows-set-netconf.bat
 windows-setup.bat
 windows.xml
-wmic.ps1

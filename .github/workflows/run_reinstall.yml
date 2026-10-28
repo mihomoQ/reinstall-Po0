@@ -1,4 +1,4 @@
-name: Po0 offline checks
+name: PO0 offline checks
 on:
   push:
   pull_request:

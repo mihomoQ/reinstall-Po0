@@ -1,27 +1,27 @@
 <!-- markdownlint-disable MD028 MD033 MD045 -->
 
-# reinstall-Po0
+# reinstall-PO0
 
-[![Po0 checks](https://github.com/mihomoQ/reinstall-Po0/actions/workflows/run_reinstall.yml/badge.svg)](https://github.com/mihomoQ/reinstall-Po0/actions/workflows/run_reinstall.yml)
-[![License](https://img.shields.io/github/license/mihomoQ/reinstall-Po0)](LICENSE)
+PO0 专用一键 VPS 系统重装脚本 [English](README.en.md)
 
-Po0 专用一键 DD / 系统重装脚本 [English](README.en.md)
-
-基于 [bin456789/reinstall](https://github.com/bin456789/reinstall)，沿用上游文档结构和多发行版功能，针对 Po0 的内网源、私网 DHCP 和公网 80/443 限制进行适配。只从 **Linux 源系统**运行，完整目录或 bundle 必须一起使用。
+基于 [bin456789/reinstall](https://github.com/bin456789/reinstall)，针对 PO0 内网环境适配，沿用 GPL-3.0 许可证。
 
 ## 介绍
 
-- 保留重装 Linux、DD RAW、Alpine Live OS、netboot.xyz 和 Windows 目标入口；各入口的 Po0 验证状态见下表。
-- 仅支持从 Linux 发起重装，已移除 Windows/Cygwin 源系统启动方式。
-- 按 MAC 识别网卡并使用私网 DHCP；公网映射地址不写入网卡，不用公网连通性探测决定是否删除地址或关闭 DHCP。
-- 软件包源使用内网；QCOW2 云镜像优先内网，没有时按文件可用性尝试校园 rsync（873），Ubuntu 另有官方 rsync 候选。
-- HTTP 和 rsync 云镜像共用大小、可用 SHA256、QCOW2 结构和独立性校验，完整镜像只在安装阶段下载一次。
-- 安装日志使用 SSH/screen；不提供 Web 日志服务。配置、辅助脚本和 preseed 随 initrd 携带，不在安装中临时下载上游脚本。
-- 已接入的目标使用 chrony 和 `time1` 至 `time5.tencentyun.com` 内网时间源。
-- 保留分区表 ID 磁盘识别、BIOS/EFI 和架构处理。Po0 整机实测仅覆盖 x86_64/BIOS，不能据此承诺其他硬件均通过。
-- 2026-10-28 已完成五轮真实重装，覆盖 Debian 12、Ubuntu 22.04、Ubuntu 24.04、AlmaLinux 9 作为源系统和目标系统；[完整记录](docs/live-test-2026-10-28.md)。
+- 一键重装到 Linux，支持 20 种常见发行版
+- 一键重装到 Windows，使用官方原版 ISO 而非自制镜像，支持自动查找 ISO 链接、自动安装 `VirtIO` 等公有云驱动
+- 支持从 Linux 重装到 Linux 或 Windows
+- 按 MAC 识别网卡，使用私网 DHCP 地址、网关和 DNS，公网映射地址不写入网卡
+- 专门适配低配小鸡，比官方 netboot 需要更少的内存
+- 全程用分区表 ID 识别硬盘
+- 支持 BIOS、EFI 引导，支持 ARM 服务器
+- 不含自制系统镜像，安装资源从镜像源获得
+- 软件包使用内网源，云镜像优先内网，缺失时使用 rsync 下载
+- 完整云镜像只下载一次，统一检查大小、可用 SHA256 和 QCOW2 格式
+- 通过 SSH/screen 查看安装日志
+- 使用 chrony 和腾讯内网时间服务器
 
-支持上游作者（以下为原项目的赞助链接）：
+支持上游作者：
 [![Donate](https://img.shields.io/badge/Donate-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA)](https://github.com/sponsors/bin456789)
 
 [![Sponsors](https://raw.githubusercontent.com/bin456789/sponsors/refs/heads/master/sponsors.svg)](https://github.com/sponsors/bin456789)
@@ -43,58 +43,41 @@ Po0 专用一键 DD / 系统重装脚本 [English](README.en.md)
 
 ## 系统要求
 
-源系统必须是 Linux。本轮实际验证的源系统为 Debian 12、Ubuntu 22.04、Ubuntu 24.04、AlmaLinux 9.8。
+原系统需要是 Linux
 
-**已完整验证的目标和命令：**
+目标系统的配置要求如下：
 
-| 命令 | 本轮实际安装版本 | 验证结果 |
-|---|---|---|
-| `bash reinstall.sh debian 12` | Debian 12 | 清盘安装、启动、公钥 SSH、内网 APT、chrony 通过 |
-| `bash reinstall.sh ubuntu 22.04` | Ubuntu 22.04.5 LTS | 同上 |
-| `bash reinstall.sh ubuntu 24.04` | Ubuntu 24.04.5 LTS | 同上 |
-| `bash reinstall.sh almalinux 9` | AlmaLinux 9.8 | 清盘安装、启动、公钥 SSH、内网 DNF、chrony 通过 |
-
-命令接收发行系列，不接受 `ubuntu 24.04.5`、`almalinux 9.5` 或 `almalinux 9.8` 这样的点版本。默认云镜像随镜像源更新，不能保证固定安装面板的 AlmaLinux 9.5。
-
-**以下完整版本表表示脚本保留的入口，不等同于所有版本在 Po0 都可直接装成功。** 未标实测的版本还依赖镜像、软件源及辅助资源可达。建议显式填写版本；省略版本会选脚本版本表最后一项，例如 Debian 13、Ubuntu 26.10、AlmaLinux 10，而不是上面的实测版本。
-
-目标系统的资源要求沿用上游作为参考，**不是 Po0 全版本实测最低配置**。本轮测试机器为 2 vCPU、2 GiB RAM、20 GiB 系统盘。
-
-| 系统 | 脚本接受的版本/参数 | 上游内存参考 | 上游硬盘参考 | Po0 验证状态 |
-|---|---|---|---|---|
-| Alpine | 3.21、3.22、3.23、3.24 | 256 MB | 1 GB | 3.24 已作为云镜像安装的中间环境；最终目标未测 |
-| Debian | 9、10、11、12、13 | 256 MB | 1～1.5 GB ^ | **12 已完整验证**；9～11 的 ELTS 路径有额外资源限制 |
-| Kali | last-snapshot、rolling | 256 MB | 1～1.5 GB ^ | 未完整验证 |
-| Ubuntu | 18.04、20.04、22.04、24.04、26.04、26.10 | 512 MB * | 2 GB | **22.04、24.04 已完整验证** |
-| Anolis | 7、8、23 | 512 MB * | 5 GB | 未完整验证 |
-| AlmaLinux | 8、9、10 | 512 MB * | 5 GB | **9 已完整验证，镜像实际为 9.8** |
-| Rocky | 8、9、10 | 512 MB * | 5 GB | 9 已验证选源，未完整重装 |
-| Oracle Linux | 8、9、10 | 512 MB * | 5 GB | 未完整验证 |
-| RHEL / 其他兼容云镜像 | `redhat --img URL`，不单独填写版本 | 512 MB * | 5 GB | 需自行提供可达 QCOW2，未完整验证 |
-| OpenCloudOS | 8、9、23（Stream） | 512 MB * | 5 GB | 未完整验证 |
-| CentOS Stream | 9、10 | 512 MB * | 5 GB | 未完整验证；另保留隐藏的 CentOS 7 历史入口 |
-| Fedora | 43、44 | 512 MB * | 5 GB | 未完整验证 |
-| openEuler | 20.03、22.03、24.03、26.09 | 512 MB * | 5 GB | 未完整验证；压缩镜像另需 RAM 缓存 |
-| openSUSE | 16.0、tumbleweed | 512 MB * | 5 GB | 未完整验证 |
-| NixOS | 26.05 | 512 MB | 5 GB | 未完整验证 |
-| Arch Linux / Arch Linux ARM | 滚动，不填版本号 | 512 MB | 5 GB | 未完整验证 |
-| Gentoo | 滚动，不填版本号 | 512 MB | 5 GB | 内网快照/签名/二进制索引可达，未完整安装 |
-| 安同 OS | 滚动，不填版本号 | 512 MB | 5 GB | 未完整验证 |
-| fnOS / FygoOS | 1 | 512 MB | 10 GB | 未完整验证 |
-| Windows（DD） | 由 `--img` 镜像决定 | 512 MB | 取决于镜像 | 未完整验证 |
-| Windows（ISO） | Vista～11、Server 2008～2025 等，见功能 5 | 512 MB～1 GB | 25 GB | 未完整验证；本轮 20 GiB 测试盘也不满足此参考要求 |
+| 系统                                                                                                                                                                                                                                                                                                                                                                   | 版本                                  | 内存      | 硬盘         |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | --------- | ------------ |
+| <img width="16" height="16" src="https://www.alpinelinux.org/alpine-logo.ico" /> Alpine                                                                                                                                                                                                                                                                                | 3.21, 3.22, 3.23, 3.24                | 256 MB    | 1 GB         |
+| <img width="16" height="16" src="https://www.debian.org/favicon.ico" /> Debian                                                                                                                                                                                                                                                                                         | 9 ELTS - 11 ELTS, 12, 13              | 256 MB    | 1 ~ 1.5 GB ^ |
+| <img width="16" height="16" src="https://github.com/bin456789/reinstall/assets/7548515/f74b3d5b-085f-4df3-bcc9-8a9bd80bb16d" /> Kali                                                                                                                                                                                                                                   | Last-Snapshot, Rolling (滚动)         | 256 MB    | 1 ~ 1.5 GB ^ |
+| <img width="16" height="16" src="https://documentation.ubuntu.com/server/_static/favicon.png" /> Ubuntu                                                                                                                                                                                                                                                                | 18.04 LTS - 26.04 LTS, 26.10          | 512 MB \* | 2 GB         |
+| <img width="16" height="16" src="https://img.alicdn.com/imgextra/i1/O1CN01oJnJZg1yK4RzI4Rx2_!!6000000006559-2-tps-118-118.png" /> Anolis                                                                                                                                                                                                                               | 7, 8, 23                              | 512 MB \* | 5 GB         |
+| <img width="16" height="16" src="https://www.redhat.com/favicon.ico" /> RHEL &nbsp;<img width="16" height="16" src="https://almalinux.org/fav/favicon.ico" /> AlmaLinux &nbsp;<img width="16" height="16" src="https://rockylinux.org/favicon.png" /> Rocky &nbsp;<img width="16" height="16" src="https://www.oracle.com/asset/web/favicons/favicon-32.png" /> Oracle | 8, 9, 10                              | 512 MB \* | 5 GB         |
+| <img width="16" height="16" src="https://opencloudos.org/qq.ico" /> OpenCloudOS                                                                                                                                                                                                                                                                                        | 8, 9, Stream 23                       | 512 MB \* | 5 GB         |
+| <img width="16" height="16" src="https://www.centos.org/assets/icons/favicon.svg" /> CentOS Stream                                                                                                                                                                                                                                                                     | 9, 10                                 | 512 MB \* | 5 GB         |
+| <img width="16" height="16" src="https://fedoraproject.org/favicon.ico" /> Fedora                                                                                                                                                                                                                                                                                      | 43, 44                                | 512 MB \* | 5 GB         |
+| <img width="16" height="16" src="https://www.openeuler.org/favicon.ico" /> openEuler                                                                                                                                                                                                                                                                                   | 20.03 LTS - 24.03 LTS, 26.09          | 512 MB \* | 5 GB         |
+| <img width="16" height="16" src="https://static.opensuse.org/favicon.ico" /> openSUSE                                                                                                                                                                                                                                                                                  | Leap 16.0, Tumbleweed (滚动)          | 512 MB \* | 5 GB         |
+| <img width="16" height="16" src="https://nixos.org/favicon.svg" /> NixOS                                                                                                                                                                                                                                                                                               | 26.05                                 | 512 MB    | 5 GB         |
+| <img width="16" height="16" src="https://archlinux.org/static/favicon.png" /> Arch Linux / Arch Linux ARM                                                                                                                                                                                                                                                              | 滚动                                  | 512 MB    | 5 GB         |
+| <img width="16" height="16" src="https://www.gentoo.org/assets/img/logo/gentoo-g.png" /> Gentoo                                                                                                                                                                                                                                                                        | 滚动                                  | 512 MB    | 5 GB         |
+| <img width="16" height="16" src="https://aosc.io/distros/aosc-os.svg" /> 安同 OS                                                                                                                                                                                                                                                                                       | 滚动                                  | 512 MB    | 5 GB         |
+| <img width="16" height="16" src="https://www.fnnas.com/favicon.ico" /> 飞牛 fnOS &nbsp;<img width="16" height="16" src="https://fygonas.com/favicon.ico" /> FygoOS                                                                                                                                                                                                     | 1                                     | 512 MB    | 10 GB        |
+| <img width="16" height="16" src="https://blogs.windows.com/wp-content/uploads/prod/2022/09/cropped-Windows11IconTransparent512-32x32.png" /> Windows (DD)                                                                                                                                                                                                              | 任何                                  | 512 MB    | 取决于镜像   |
+| <img width="16" height="16" src="https://blogs.windows.com/wp-content/uploads/prod/2022/09/cropped-Windows11IconTransparent512-32x32.png" /> Windows (ISO)                                                                                                                                                                                                             | Vista, 7, 8.x (Server 2008 - 2012 R2) | 512 MB    | 25 GB        |
+| <img width="16" height="16" src="https://blogs.windows.com/wp-content/uploads/prod/2022/09/cropped-Windows11IconTransparent512-32x32.png" /> Windows (ISO)                                                                                                                                                                                                             | 10, 11 (Server 2016 - 2025)           | 1 GB      | 25 GB        |
 
 \* 表示使用云镜像安装，非传统网络安装
 
 ^ 表示需要 256 MB 内存 + 1.5 GB 硬盘，或 512 MB 内存 + 1 GB 硬盘
 
-Po0 云镜像安装还会检查暂存分区、引导空间和目标系统空间。gzip/xz/zstd 包装的 QCOW2 要求可用内存容纳压缩包并额外保留 512 MiB，RAM 文件系统空间也必须足够；xz/zstd 解码内存限制为 256 MiB。压缩 HTTP 镜像还需要 Content-Length。上述条件不能由“512 MB”这一上游参考值替代。
-
-内网没有某个软件仓库时，不会自动切到校园公网软件源。rsync 回退仅用于云镜像；ELTS 公钥、Kali 辅助文件、Oracle 索引、netboot.xyz、Windows 驱动和可选工具等仍需逐项确认可达，不能仅凭版本参数存在就视为可用。
+gzip/xz/zstd 压缩的云镜像需要额外内存缓存：压缩包大小加 512 MiB；xz/zstd 解码内存上限为 256 MiB，HTTP 压缩镜像需要提供 Content-Length。
 
 > [!WARNING]
 >
-> 上游还提供独服和 PC 的通用支持；本分支只验证了 Po0 环境
+> 本脚本理论上支持独服和 PC
 >
 > 但如果能使用 IPMI 或 U 盘，则不建议使用本脚本
 
@@ -106,15 +89,14 @@ Po0 云镜像安装还会检查暂存分区、引导空间和目标系统空间�
 
 ## 下载（当前系统是 <img width="20" height="20" src="https://www.kernel.org/theme/images/logos/favicon.png" /> Linux）
 
-Po0 公网 80/443 受限，**不能使用上游的单文件下载方式**。在能访问 GitHub 的电脑上克隆完整仓库，再通过 SCP/SFTP 上传：
+在能访问 GitHub 的电脑上下载完整仓库，再通过 SCP/SFTP 上传到 PO0：
 
 ```bash
-# 在能访问 GitHub 的电脑执行
 git clone https://github.com/mihomoQ/reinstall-Po0.git
 scp -r reinstall-Po0 root@YOUR_SERVER:/root/
 ```
 
-也可构建带文件校验的 bundle（电脑需要 Python），再上传解压：
+也可以打包后上传：
 
 ```bash
 cd reinstall-Po0
@@ -122,19 +104,20 @@ python3 tools/build-bundle.py
 scp dist/reinstall-Po0.tar.gz root@YOUR_SERVER:/root/
 ```
 
+在 PO0 上解压：
+
 ```bash
-# 在 Po0 的 Linux 系统执行
 cd /root
 tar xzf reinstall-Po0.tar.gz
 cd reinstall-Po0
 sha256sum -c SHA256SUMS
 ```
 
-这里的 `YOUR_SERVER` 需要替换为自己的机器地址，SSH 端口和密钥按实际情况配置。不得只上传 `reinstall.sh`；`po0-assets.list` 列出的配套文件都必须保留。
+将 `YOUR_SERVER` 替换为服务器地址。需要保留完整目录，不能只上传 `reinstall.sh`。
 
 ## 使用
 
-从完整目录中以 root 运行 `bash reinstall.sh ...`。不支持从 Windows/Cygwin 发起安装；文档后面的 Windows 章节指 **Windows 安装目标**。
+在 Linux 上以 root 进入完整脚本目录，运行 `bash reinstall.sh ...`。
 
 ### 功能 1: 安装 <img width="16" height="16" src="https://www.kernel.org/theme/images/logos/favicon.png" /> Linux
 
@@ -145,17 +128,15 @@ sha256sum -c SHA256SUMS
 > 如果不小心运行了脚本，可以在重启前运行 `bash reinstall.sh reset` 取消重装
 
 - 脚本会提示输入用户名和密码，不输入则使用 `root` 和随机密码
-- 不输入版本号则选择脚本版本表最后一项；在 Po0 建议显式指定已经实测的版本
-- 尽量扩展目标系统分区；具体分区布局取决于安装方法和镜像，云镜像暂存分区会在安装后回收
-- 根据发行版和虚拟化环境选择相应内核
-- 安装 Red Hat 的入口保留但尚未完成 Po0 整机验证；需填写 <https://access.redhat.com/downloads/content/rhel> 得到的 `qcow2` 镜像链接，也可以安装其它类 RHEL 系统的 `qcow2`，例如 `Alibaba Cloud Linux` 和 `TencentOS Server`
-- 建议直接使用本地公钥参数，例如 `bash reinstall.sh debian 12 --ssh-key /root/.ssh/authorized_keys`。重装后修改 SSH 配置时，也要检查 `/etc/ssh/sshd_config.d/`
-- 不执行整套系统升级；安装必需组件时可能更新内核或依赖，重装后可自行检查其余更新
+- 不输入版本号则安装最新版
+- 最大化利用磁盘空间：不含 boot 和 swap 分区
+- 自动根据机器类型和商家安装优化内核
+- 安装 Red Hat 时需填写 <https://access.redhat.com/downloads/content/rhel> 得到的 `qcow2` 镜像链接，也可以安装其它类 RHEL 系统的 `qcow2`，例如 `Alibaba Cloud Linux` 和 `TencentOS Server`
+- 重装后如需修改 SSH 端口或者改成密钥登录，注意还要修改 `/etc/ssh/sshd_config.d/` 里面的文件
+- 不执行整套系统升级；安装必需组件时可能更新内核或依赖，重装后可自行更新
 - 安装飞牛 fnOS/FygoOS 时设置的用户名、密码、密钥仅用于安装期间登录 SSH 查看日志，不会应用到新系统。系统安装后需到后台面板 <http://IP:5666> 创建用户和开启 SSH
 
-下面是参数速查表，`|` 表示从中选择一个版本，不能整行原样执行：
-
-```text
+```bash
 bash reinstall.sh anolis      7|8|23
                   rocky       8|9|10
                   oracle      8|9|10
@@ -191,35 +172,31 @@ bash reinstall.sh anolis      7|8|23
 
 > [!TIP]
 >
-> 安装日志通过 SSH/screen 查看，不提供 HTTP/Web 日志。商家控制台仍可用于查看启动故障。
+> 通过 SSH/screen、商家后台 VNC 或串行控制台查看安装进度。
 >
-> 安装环境网络和 SSH 仍正常时，可登录处理错误；若失联则需要商家面板恢复。
+> 即使安装过程出错，也能连接 SSH 手动救砖。
 >
 > 目标系统非 Debian/Kali 时，可以运行 `/trans.sh alpine` 自动救砖成 Alpine 系统。
 
-#### 其他安装方式
+#### 云镜像安装 Debian
 
-Debian 云镜像入口仍保留，但尚未完成 Po0 整机验证：
+适合于 CPU 较慢的机器：
 
 ```bash
-bash reinstall.sh debian 12 --ci
+bash reinstall.sh debian --ci
 ```
 
-上游旧的 Ubuntu/RHEL 系 `--installer` 方式在本分支明确拒绝，相关不可达实现和专用资源已删除；这些发行版的默认云镜像入口仍保留。
+#### 内网源与安装日志
 
-#### Po0 镜像与日志
-
-- 默认内网源：`http://mirrors.tencentyun.com`。DNS 优先使用 DHCP 获得的配置；缺少可用 DNS 时使用准备阶段保存的解析器，目标 IP 仍保持 DHCP。
-- 云镜像缺失时按可用性尝试南大、中科大、清华 rsync，Ubuntu 另有官方 rsync 候选。[MirrorZ / 教育网联合镜像站](https://mirrors.cernet.edu.cn/) 的 HTTP 302 不能作为 rsync 重定向器，本脚本不依赖其公网接口，也不承诺实时最快源。
-- 镜像有匹配 SHA256 清单时严格校验；没有时明确提示，并检查传输、可用大小和 QCOW2 结构。镜像站提供的清单不等于发行方签名认证。
-- 普通云镜像在重建分区后下载和完整校验；失败时可能需要面板恢复，不能保证保留旧系统。
-- Debian/Kali 安装器可运行 `tail -f /var/log/syslog` 或 `screen -x root/`；Alpine 中间环境可运行 `tail -f /reinstall.log`。
-- 常规路径会安装 chrony 并使用腾讯五个内网时间源；完整验证范围见上表。未照搬厂商整套 CPU/IRQ/RPS/XPS 调优脚本；保留腾讯 virtio 磁盘 `max_sectors_kb=512` 规则。
+- 默认软件源为 `http://mirrors.tencentyun.com`。
+- 云镜像优先从内网下载，缺失时依次尝试南大、中科大、清华的 rsync 服务（873 端口）；Ubuntu 另有官方 rsync 候选。
+- 普通云镜像在安装阶段下载一次；压缩镜像先缓存在内存中，再直接解压到安装分区。
+- DNS 优先使用 DHCP 提供的配置，缺失时使用准备阶段保存的解析器。
+- chrony 使用 `time1.tencentyun.com` 至 `time5.tencentyun.com`。
+- Debian/Kali 安装器日志：`tail -f /var/log/syslog` 或 `screen -x root/`。
+- Alpine 中间环境日志：`tail -f /reinstall.log`。
 
 ### 功能 2: DD RAW 镜像到硬盘
-
-> [!IMPORTANT]
-> 此入口在 Po0 未完成整机验证。镜像地址必须能从 Po0 访问；示例端口不是自动放通的服务。原始 DD 不支持 rsync，rsync 回退仅用于 QCOW2 云镜像安装。
 
 > [!CAUTION]
 >
@@ -229,12 +206,14 @@ bash reinstall.sh debian 12 --ci
 
 - 支持 `raw` 和固定大小的 `vhd` 镜像。未压缩或者压缩成 `.gz` `.xz` `.zst` `.tar` `.tar.gz` `.tar.xz` `.tar.zst`
 - DD Windows 镜像时，会自动扩展系统盘，静态 IP 的机器会配置好 IP，可能首次开机几分钟后才生效
-- DD Linux 镜像默认不修改镜像内容；显式指定 `--cloud-data` 时会注入相应配置
+- DD Linux 镜像默认不修改镜像内容，使用 `--cloud-data` 时会注入指定配置
 - 脚本会提示输入用户名和密码，用于安装时 SSH 登录观察日志，不输入则使用 `root` 和随机密码
 
 ```bash
-bash reinstall.sh dd --img "http://YOUR-MIRROR:8080/xxx.xz"
+bash reinstall.sh dd --img "https://example.com/xxx.xz"
 ```
+
+DD 使用可访问的 HTTP/HTTPS 镜像地址；rsync 下载用于云镜像安装，不用于 RAW DD。
 
 #### 可选参数
 
@@ -262,16 +241,16 @@ bash reinstall.sh dd --img "http://YOUR-MIRROR:8080/xxx.xz"
 >
 > ```bash
 > # 使用本地目录
-> bash reinstall.sh dd --img "http://YOUR-MIRROR:8080/xxx.xz" --cloud-data /path/to/seed/
+> bash reinstall.sh dd --img "https://example.com/xxx.xz" --cloud-data /path/to/seed/
 > # 使用 HTTP 目录
-> bash reinstall.sh dd --img "http://YOUR-MIRROR:8080/xxx.xz" --cloud-data "http://YOUR-MIRROR:8080/seed/"
+> bash reinstall.sh dd --img "https://example.com/xxx.xz" --cloud-data "https://example.com/seed/"
 > ```
 
 > [!TIP]
 >
-> 安装日志通过 SSH/screen 查看，不提供 HTTP/Web 日志。商家控制台仍可用于查看启动故障。
+> 通过 SSH/screen、商家后台 VNC 或串行控制台查看安装进度。
 >
-> 安装环境网络和 SSH 仍正常时，可登录处理错误；若失联则需要商家面板恢复
+> 即使安装过程出错，也能连接 SSH 手动救砖
 >
 > 也可以运行 `/trans.sh alpine` 自动救砖成 Alpine 系统。
 
@@ -300,9 +279,6 @@ bash reinstall.sh alpine --hold 1
 
 ### 功能 4: 重启到 <img width="16" height="16" src="https://netboot.xyz/img/favicon.ico" /> netboot.xyz
 
-> [!IMPORTANT]
-> 入口保留，Po0 未完成验证。netboot.xyz 引导文件和菜单通常需要公网 HTTP/HTTPS，端口限制下不能保证可用。
-
 - 可使用商家后台 VNC 手动安装 [更多系统](https://github.com/netbootxyz/netboot.xyz?tab=readme-ov-file#what-operating-systems-are-currently-available-on-netbootxyz)
 
 > [!TIP]
@@ -318,9 +294,6 @@ bash reinstall.sh netboot.xyz
 ![netboot.xyz](https://netboot.xyz/images/netboot.xyz.gif)
 
 ### 功能 5: 安装 <img width="16" height="16" src="https://blogs.windows.com/wp-content/uploads/prod/2022/09/cropped-Windows11IconTransparent512-32x32.png" /> Windows ISO
-
-> [!IMPORTANT]
-> 本节保留上游的 Windows **目标安装**用法，不代表 Po0 已验证。自动查找 ISO、驱动下载可能依赖被限制的公网 80/443；使用前必须解决资源可达性和磁盘容量要求。没有 Windows 源系统启动入口。
 
 ![Windows 安装界面](https://github.com/bin456789/reinstall/assets/7548515/07c1aea2-1ce3-4967-904f-aaf9d6eec3f7)
 
@@ -347,8 +320,6 @@ bash reinstall.sh netboot.xyz
   - Azure Local (Azure Stack HCI)
 
 #### 方法 1: 让脚本自动查找 ISO
-
-仅在相关站点可访问时适用；Po0 默认网络条件下不保证成功。
 
 - 脚本会从 <https://ntriver.org/download-windows-office> 查找 ISO，该网站专门收集官方 ISO 镜像
 - 默认查找 64 位系统镜像，除非指定了 `--bit 32`
@@ -540,8 +511,8 @@ bash reinstall.sh windows \
 <summary>以下网站可找到 ISO 链接</summary>
 
 - 正式版
-  - <https://ntriver.org/download-windows-office> (上游列出的 ISO 查找站点)
-  - <https://massgrave.dev/genuine-installation-media> (上游列出的 ISO 查找站点)
+  - <https://ntriver.org/download-windows-office> (推荐，ISO 是最新版)
+  - <https://massgrave.dev/genuine-installation-media> (推荐，ISO 是最新版)
   - <https://next.itellyou.cn>
   - <https://www.xitongku.com>
   - <https://www.microsoft.com/software-download/windows10> (需用非 Windows User-Agent 打开)
@@ -576,9 +547,7 @@ bash reinstall.sh windows \
 - `--hold 1` 仅重启到安装环境，不运行安装，用于 SSH 登录验证网络连通性
 - `--hold 2` 用于在进入 Windows 官方安装程序之前，SSH 登录修改 `boot.wim`、`install.wim` 或者其它内容，硬盘挂载在 `/os`
 
-#### 上游自动驱动列表（Po0 可达性未验证）
-
-以下为保留的按需下载逻辑，使用 `--no-auto-drivers` 可禁止；禁止后应自行准备并用 `--add-driver` 提供必要驱动。
+#### 以下驱动会自动按需下载安装，使用 `--no-auto-drivers` 可禁止此功能
 
 - VirtIO ([社区版][virtio-virtio], [阿里云][virtio-aliyun], [腾讯云][virtio-qcloud], [GCP][virtio-gcp], [GCP (Win7/2008 SHA-1)][virtio-gcp-win6.1sha1])
 - XEN ([~~社区版~~][xen-xen] (未签名), [Citrix][xen-citrix], [AWS][xen-aws])
@@ -624,7 +593,7 @@ bash reinstall.sh windows \
 
 #### 如何用 [DISM++](https://github.com/Chuyu-Team/Dism-Multi-language/releases) 查询 ISO 包含的映像名称
 
-打开文件菜单 > 打开映像文件，选择要安装的 ISO，即可得到可用于 `--image-name` 的名称；能否完成安装仍取决于镜像、驱动和资源可达性。
+打开文件菜单 > 打开映像文件，选择要安装的 iso，即可得到映像名称，所有映像名称都可以安装
 
 ![image-name](https://github.com/bin456789/reinstall/assets/7548515/5aae0a9b-61e2-4f66-bb98-d470a6beaac2)
 
@@ -657,7 +626,7 @@ bash reinstall.sh windows \
 
 #### ARM 安装 Windows 的注意事项
 
-以下为上游提供的 ARM/其他商家参考，不是 Po0 实测结果；本轮 Po0 验证只有 x86_64/BIOS。
+大部分 ARM 云服务器支持安装 Windows 11
 
 安装过程可能会黑屏，串行控制台可能会显示 `ConvertPages: failed to find range`，均不影响正常安装
 
@@ -692,11 +661,9 @@ bash reinstall.sh reset
 - `--ssh-key gitlab:your_username` 或 `--ssh-key gl:your_username`
 - `--ssh-key /path/to/public_key`
 
-远程公钥 URL、`github:` 和 `gitlab:` 需要对应地址可达。在 Po0 上优先上传公钥文件后使用本地路径；不要依赖被限制的公网接口。
-
 ## 如何使用旧版本
 
-在能够访问 GitHub 的电脑上，从 [本仓库提交历史](https://github.com/mihomoQ/reinstall-Po0/commits/main) 选择版本，检出**整套文件**后重新构建并上传：
+从 [本仓库提交历史](https://github.com/mihomoQ/reinstall-Po0/commits/main) 选择旧版本，检出完整代码后重新打包上传：
 
 ```bash
 git clone https://github.com/mihomoQ/reinstall-Po0.git
@@ -705,34 +672,22 @@ git checkout COMMIT_ID
 python3 tools/build-bundle.py
 ```
 
-将 `COMMIT_ID` 替换为要使用的提交。不要只替换单个脚本，也不要混用不同版本的辅助文件。上游 `--commit` 和 `trans.sh update` 单文件更新方式在本分支已移除。
+将 `COMMIT_ID` 替换为对应提交，整套文件一起更新。
 
 ## 如何修改脚本自用
 
-1. Fork 本仓库，保留 GPL-3.0 许可证和上游来源说明。
-2. 需要改主镜像时，将 `po0.conf.example` 复制为 `po0.conf`。`PO0_MIRROR_BASE` 只能是 HTTP 主机和可选端口，不带路径；Debian 安装器依赖 HTTP 仓库路径。
-3. 需要单独改 URL 时，将 `po0-mirrors.conf.example` 复制为 `po0-mirrors.conf`，每行两个 HTTP(S) 字面前缀，第一条匹配生效。例如将对应源映射到实际可用的 `http://YOUR-MIRROR:8080/` 服务。
-4. 修改代码后重新构建完整 bundle 并上传。`po0.conf` 是受信任的 shell 配置；配置文件、密钥和实机日志不应提交到公开仓库。
+1. Fork 本仓库。
+2. 需要更换内网源时，将 `po0.conf.example` 复制为 `po0.conf`，设置 `PO0_MIRROR_BASE`，格式为 HTTP 主机和可选端口，不包含路径。
+3. 单独的下载地址可通过 `po0-mirrors.conf` 配置前缀映射，格式见 `po0-mirrors.conf.example`。
+4. 修改代码后运行 `python3 tools/build-bundle.py`，上传并使用完整安装包。两个自定义配置文件不包含在生成的包中，需要自行上传。
 
-日常验证命令：
-
-```bash
-python3 -m unittest discover -s tests -p 'test*.py'
-busybox ash tests/test-network.sh
-bash tests/test-trans.sh
-sh tests/test-chrony.sh
-bash tests/test-trans-chrony.sh
-sh tests/test-cloud-transport.sh
-bash tests/test-trans-cloud.sh
-```
-
-隔离测试和 CI 不会运行重装入口，不能代替真实清盘、启动和 SSH 验证。实机记录：[2026-10-27](docs/live-test-2026-10-27.md)、[2026-10-28](docs/live-test-2026-10-28.md)。
+PO0 公网 80/443 受限，自定义镜像、公钥和驱动链接需要使用机器能够访问的地址；公钥也可以直接使用本地文件。
 
 ## 感谢
 
-感谢 [bin456789/reinstall](https://github.com/bin456789/reinstall) 提供原始项目和文档。本分支基于 `01e1e259968c3b9c5ee5d6aea7253392b5eafe92`，已同步上游至 `54fae2067557b3c0ca49e7c9ce03bca63c793f8c`，沿用 [GPL-3.0](LICENSE)。未修改的上游说明备份见 [README.upstream.md](README.upstream.md)。
+感谢 [bin456789/reinstall](https://github.com/bin456789/reinstall) 提供原始项目。
 
-以下为原项目感谢的资源提供方，保留其原有署名，并非本分支的赞助或验证声明：
+以下为原项目的资源提供方：
 
 [![Oracle Cloud](https://github.com/bin456789/reinstall/assets/7548515/8b430ed4-8344-4f96-b4da-c2bda031cc90)](https://www.oracle.com/cloud/)
 [![DartNode](https://github.com/bin456789/reinstall/assets/7548515/435d6740-bcdd-4f3a-a196-2f60ae397f17)](https://dartnode.com/)

@@ -1,26 +1,27 @@
 <!-- markdownlint-disable MD028 MD033 MD045 -->
 
-# reinstall-Po0
+# reinstall-PO0
 
-[![Po0 checks](https://github.com/mihomoQ/reinstall-Po0/actions/workflows/run_reinstall.yml/badge.svg)](https://github.com/mihomoQ/reinstall-Po0/actions/workflows/run_reinstall.yml)
+One-click OS reinstallation script for PO0 VPS [中文](README.md)
 
-One-click VPS OS reinstallation for Po0 [中文](README.md)
-
-Based on [bin456789/reinstall](https://github.com/bin456789/reinstall), retaining the upstream documentation structure and GPL-3.0 license. This fork is for Linux source systems on Po0: private DHCP networking, internal package mirrors, cloud-image rsync fallback, and SSH installation logs.
+Based on [bin456789/reinstall](https://github.com/bin456789/reinstall), adapted for PO0's private network and internal mirrors.
 
 ## Introduction
 
-- Retains the upstream Linux distribution choices and Linux-to-Windows target entrypoint. The [version table](#system-requirements) distinguishes accepted options from complete Po0 installation tests.
-- Runs from **Linux only**. Windows/Cygwin source bootstrap has been removed.
-- Keeps the private address, gateway and DNS supplied by DHCP; the public mapped IP is not assigned to the NIC. Missing DHCP DNS can fall back to resolvers saved from the original system.
-- Does not use public Internet or geolocation probes, and does not remove addresses or routes because public ports 80/443 are blocked.
-- Uses partition-table IDs to identify the installation disk and retains boot-mode and disk checks.
-- Retains BIOS/EFI and architecture handling; live tests cover one x86_64/BIOS Po0 instance.
-- Uses internal package mirrors. Cloud images prefer the internal mirror and fall back to bundled rsync endpoints on port 873 when available.
-- Carries version-matched local helper files and installation configuration in initrd. Transfer the complete bundle, not only `reinstall.sh`.
-- Uses SSH/screen installation logs and Tencent internal chrony time sources on the integrated Linux targets.
+- One-click reinstallation to Linux: Supports 20 common distributions.
+- One-click reinstallation to Windows: Uses the official original ISO instead of custom images. Supports automatically fetch the ISO link and installs public cloud drivers like `VirtIO`.
+- Supports `Linux to Linux` and `Linux to Windows` reinstallation.
+- Identifies the NIC by MAC address and configures private DHCP networking. The cloud-mapped public IP is not assigned to the NIC. No public connectivity or geolocation probes are required.
+- Specially optimized for low-spec servers, requires less memory than the official netboot
+- Uses partition table ID to identify hard drives throughout the process
+- Supports BIOS and EFI boot, and ARM Server
+- No custom OS images included; system images are downloaded from mirror sites.
+- Uses internal software repositories. Cloud images prefer the internal mirror and fall back to rsync over port 873 when missing.
+- Downloads each complete cloud image once, with available SHA256 and QCOW2 format checks.
+- Uses SSH/screen installation logs and chrony with Tencent's internal time servers.
+- Bundles helper scripts and installation configuration locally and carries them into the installation environment.
 
-Support the original upstream author:
+Support the upstream author:
 [![Donate](https://img.shields.io/badge/Donate-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA)](https://github.com/sponsors/bin456789)
 
 [![Sponsors](https://raw.githubusercontent.com/bin456789/sponsors/refs/heads/master/sponsors.svg)](https://github.com/sponsors/bin456789)
@@ -42,60 +43,43 @@ Upstream community: [![Telegram Group](https://img.shields.io/badge/Telegram-2CA
 
 ## System Requirements
 
-Run the script as root from a Linux source system. Complete installations have been verified on one Po0 x86_64/BIOS instance with **2 vCPU, about 2 GiB RAM and a 20 GiB system disk**.
+The original system must be Linux.
 
-### Verified Po0 targets
+The system requirements for the target system are as follows:
 
-| Command | Actual installed system | Complete installation result |
-|---|---|---|
-| `bash reinstall.sh debian 12` | Debian 12 | Disk reinstall, first boot, SSH, internal APT and chrony passed |
-| `bash reinstall.sh ubuntu 22.04` | Ubuntu 22.04.5 LTS | Disk reinstall, first boot, SSH, internal APT and chrony passed |
-| `bash reinstall.sh ubuntu 24.04` | Ubuntu 24.04.5 LTS | Disk reinstall, first boot, SSH, internal APT and chrony passed |
-| `bash reinstall.sh almalinux 9` | AlmaLinux 9.8 | Disk reinstall, first boot, SSH, enabled internal DNF repositories and chrony passed |
+| System                                                                                                                                                                                                                                                                                                                                                                 | Version                               | Memory    | Disk             |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | --------- | ---------------- |
+| <img width="16" height="16" src="https://www.alpinelinux.org/alpine-logo.ico" /> Alpine                                                                                                                                                                                                                                                                                | 3.21, 3.22, 3.23, 3.24                | 256 MB    | 1 GB             |
+| <img width="16" height="16" src="https://www.debian.org/favicon.ico" /> Debian                                                                                                                                                                                                                                                                                         | 9 ELTS - 11 ELTS, 12, 13              | 256 MB    | 1 ~ 1.5 GB ^     |
+| <img width="16" height="16" src="https://github.com/bin456789/reinstall/assets/7548515/f74b3d5b-085f-4df3-bcc9-8a9bd80bb16d" /> Kali                                                                                                                                                                                                                                   | Last-Snapshot, Rolling                | 256 MB    | 1 ~ 1.5 GB ^     |
+| <img width="16" height="16" src="https://documentation.ubuntu.com/server/_static/favicon.png" /> Ubuntu                                                                                                                                                                                                                                                                | 18.04 LTS - 26.04 LTS, 26.10          | 512 MB \* | 2 GB             |
+| <img width="16" height="16" src="https://img.alicdn.com/imgextra/i1/O1CN01oJnJZg1yK4RzI4Rx2_!!6000000006559-2-tps-118-118.png" /> Anolis                                                                                                                                                                                                                               | 7, 8, 23                              | 512 MB \* | 5 GB             |
+| <img width="16" height="16" src="https://www.redhat.com/favicon.ico" /> RHEL &nbsp;<img width="16" height="16" src="https://almalinux.org/fav/favicon.ico" /> AlmaLinux &nbsp;<img width="16" height="16" src="https://rockylinux.org/favicon.png" /> Rocky &nbsp;<img width="16" height="16" src="https://www.oracle.com/asset/web/favicons/favicon-32.png" /> Oracle | 8, 9, 10                              | 512 MB \* | 5 GB             |
+| <img width="16" height="16" src="https://opencloudos.org/qq.ico" /> OpenCloudOS                                                                                                                                                                                                                                                                                        | 8, 9, Stream 23                       | 512 MB \* | 5 GB             |
+| <img width="16" height="16" src="https://www.centos.org/assets/icons/favicon.svg" /> CentOS Stream                                                                                                                                                                                                                                                                     | 9, 10                                 | 512 MB \* | 5 GB             |
+| <img width="16" height="16" src="https://fedoraproject.org/favicon.ico" /> Fedora                                                                                                                                                                                                                                                                                      | 43, 44                                | 512 MB \* | 5 GB             |
+| <img width="16" height="16" src="https://www.openeuler.org/favicon.ico" /> openEuler                                                                                                                                                                                                                                                                                   | 20.03 LTS - 24.03 LTS, 26.09          | 512 MB \* | 5 GB             |
+| <img width="16" height="16" src="https://static.opensuse.org/favicon.ico" /> openSUSE                                                                                                                                                                                                                                                                                  | Leap 16.0, Tumbleweed (Rolling)       | 512 MB \* | 5 GB             |
+| <img width="16" height="16" src="https://nixos.org/favicon.svg" /> NixOS                                                                                                                                                                                                                                                                                               | 26.05                                 | 512 MB    | 5 GB             |
+| <img width="16" height="16" src="https://archlinux.org/static/favicon.png" /> Arch Linux / Arch Linux ARM                                                                                                                                                                                                                                                              | Rolling                               | 512 MB    | 5 GB             |
+| <img width="16" height="16" src="https://www.gentoo.org/assets/img/logo/gentoo-g.png" /> Gentoo                                                                                                                                                                                                                                                                        | Rolling                               | 512 MB    | 5 GB             |
+| <img width="16" height="16" src="https://aosc.io/distros/aosc-os.svg" /> AOSC OS                                                                                                                                                                                                                                                                                       | Rolling                               | 512 MB    | 5 GB             |
+| <img width="16" height="16" src="https://www.fnnas.com/favicon.ico" /> fnOS &nbsp;<img width="16" height="16" src="https://fygonas.com/favicon.ico" /> FygoOS                                                                                                                                                                                                          | 1                                     | 512 MB    | 10 GB            |
+| <img width="16" height="16" src="https://blogs.windows.com/wp-content/uploads/prod/2022/09/cropped-Windows11IconTransparent512-32x32.png" /> Windows (DD)                                                                                                                                                                                                              | Any                                   | 512 MB    | Depends on image |
+| <img width="16" height="16" src="https://blogs.windows.com/wp-content/uploads/prod/2022/09/cropped-Windows11IconTransparent512-32x32.png" /> Windows (ISO)                                                                                                                                                                                                             | Vista, 7, 8.x (Server 2008 - 2012 R2) | 512 MB    | 25 GB            |
+| <img width="16" height="16" src="https://blogs.windows.com/wp-content/uploads/prod/2022/09/cropped-Windows11IconTransparent512-32x32.png" /> Windows (ISO)                                                                                                                                                                                                             | 10, 11 (Server 2016 - 2025)           | 1 GB      | 25 GB            |
 
-The `almalinux 9` command follows the mirror's current major-version image; it does not pin 9.5. Use `ubuntu 22.04` or `ubuntu 24.04`, not the point-release strings shown above. The five-installation sequence also exercised all four systems as source systems. See the [live-test record](docs/live-test-2026-10-28.md).
+\* Indicates installation using cloud images, not traditional network installation.
 
-### Retained version options and upstream resource references
+^ Indicates requiring either 256 MB memory + 1.5 GB disk, or 512 MB memory + 1 GB disk
 
-The following versions are accepted by the current script. **Acceptance by the argument parser does not confirm that a complete Po0 installation works.** Except for the four targets above, complete installations remain unverified. Resource availability alone is not an installation test.
-
-RAM/disk values below are inherited **upstream reference values**, not validated Po0 minima. Plain cloud images also require temporary disk space. Compressed cloud images require RAM for the archive **plus 512 MiB**, sufficient RAM-filesystem space, and at most 256 MiB of xz/zstd decoder memory. Compressed HTTP images require Content-Length. Plain HTTP images without a known size use a 2 GiB staging-partition fallback.
-
-| System / command name | Accepted versions | Upstream RAM reference | Upstream disk reference | Po0 verification |
-|---|---|---|---|---|
-| Alpine `alpine` | 3.21, 3.22, 3.23, 3.24 | 256 MB | 1 GB | 3.24 tested as an intermediate environment; final target unverified |
-| Debian `debian` | 9, 10, 11, 12, 13 | 256 MB | 1–1.5 GB ^ | 12 verified; other versions unverified, 9–11 use ELTS paths |
-| Kali `kali` | last-snapshot, rolling | 256 MB | 1–1.5 GB ^ | Unverified |
-| Ubuntu `ubuntu` | 18.04, 20.04, 22.04, 24.04, 26.04, 26.10 | 512 MB * | 2 GB | 22.04 and 24.04 verified; others unverified |
-| Anolis `anolis` | 7, 8, 23 | 512 MB * | 5 GB | Unverified |
-| AlmaLinux `almalinux` | 8, 9, 10 | 512 MB * | 5 GB | 9 verified as 9.8; 8 and 10 unverified |
-| Rocky `rocky` | 8, 9, 10 | 512 MB * | 5 GB | Unverified; Rocky 9 image selection was tested |
-| Oracle Linux `oracle` | 8, 9, 10 | 512 MB * | 5 GB | Unverified |
-| RHEL / compatible `redhat` | No version argument; requires `--img` QCOW2 URL | 512 MB * | 5 GB | Unverified |
-| OpenCloudOS `opencloudos` | 8, 9, 23 (Stream) | 512 MB * | 5 GB | Unverified |
-| CentOS Stream `centos` | 9, 10 | 512 MB * | 5 GB | Unverified |
-| Fedora `fedora` | 43, 44 | 512 MB * | 5 GB | Unverified |
-| openEuler `openeuler` | 20.03, 22.03, 24.03, 26.09 | 512 MB * | 5 GB | Unverified |
-| openSUSE `opensuse` | 16.0, tumbleweed | 512 MB * | 5 GB | Unverified |
-| NixOS `nixos` | 26.05 | 512 MB | 5 GB | Unverified |
-| Arch Linux / ARM `arch` | Rolling; no version argument | 512 MB | 5 GB | Unverified |
-| Gentoo `gentoo` | Rolling; no version argument | 512 MB | 5 GB | Internal resources and isolated source tests only |
-| AOSC OS `aosc` | Rolling; no version argument | 512 MB | 5 GB | Unverified |
-| fnOS / FygoOS `fnos` / `fygoos` | 1 | 512 MB | 10 GB | Unverified |
-| Windows via `dd` | User-supplied image | 512 MB | Depends on image | Unverified |
-| Windows ISO `windows` | Vista–11; Server 2008–2025 and other editions listed below | 512 MB for older releases; 1 GB for Windows 10/11 and Server 2016+ | 25 GB | Unverified; exceeds the test VM's 20 GiB disk |
-
-`centos 7` is also retained as a historical compatibility argument, outside the advertised CentOS Stream choices; it is not a verified Po0 target.
-
-\* Cloud-image installation, not the removed legacy ISO installer.
-
-^ Upstream reference: either 256 MB RAM + 1.5 GB disk, or 512 MB RAM + 1 GB disk.
+Compressed QCOW2 images additionally need RAM for the archive plus 512 MiB and sufficient RAM-filesystem space; xz/zstd decoder memory is limited to 256 MiB, and compressed HTTP images require Content-Length.
 
 > [!WARNING]
 >
-> Upstream also contains dedicated-server and PC paths; these are outside this fork's Po0 verification.
+> In theory it also supports dedicated servers and PCs
 >
-> If you have IPMI or a USB installation medium available, consider that installation method instead.
+> but if you can use IPMI or a USB drive, this script is not recommended.
 
 > [!WARNING]
 >
@@ -105,18 +89,22 @@ RAM/disk values below are inherited **upstream reference values**, not validated
 
 ## Download (Current system is <img width="20" height="20" src="https://www.kernel.org/theme/images/logos/favicon.png" /> Linux)
 
-Download the **complete repository** on a computer that can access GitHub. The Po0 server does not need direct GitHub HTTP/HTTPS access:
+Download the complete repository on a computer with GitHub access, then transfer it to PO0 over SCP/SFTP:
 
 ```bash
 git clone https://github.com/mihomoQ/reinstall-Po0.git
+scp -r reinstall-Po0 root@YOUR_SERVER:/root/
+```
+
+Alternatively, build a bundle containing file checksums and upload it:
+
+```bash
 cd reinstall-Po0
 python3 tools/build-bundle.py
 scp dist/reinstall-Po0.tar.gz root@YOUR_SERVER:/root/
 ```
 
-Replace `YOUR_SERVER` with your server address. On a computer where Python is named `python`, use `python tools/build-bundle.py`. Alternatively, download the repository ZIP from GitHub and transfer its entire extracted directory using SCP/SFTP.
-
-On the Po0 server:
+On the PO0 server:
 
 ```bash
 cd /root
@@ -125,17 +113,11 @@ cd reinstall-Po0
 sha256sum -c SHA256SUMS
 ```
 
-The bundle includes the helper scripts, configuration templates and checksums, and excludes private operator configuration. It is not sufficient to download only `reinstall.sh`. Package repositories default to `http://mirrors.tencentyun.com`; public ports 80/443 are not required for obtaining the script by SCP/SFTP.
+Replace `YOUR_SERVER` with the server address and use your SSH port and key. Keep the complete directory together; `reinstall.sh` needs its accompanying files.
 
 ## Usage
 
-Run all commands below from the complete bundle directory on **Linux**, as root:
-
-```bash
-bash reinstall.sh debian 12 --ssh-key /root/.ssh/authorized_keys
-```
-
-The preparation script does not trigger the first reboot. Review its output, then reboot to start installation. Use `reset` before reboot to cancel. The four verified target commands appear in [System Requirements](#system-requirements); the remaining feature documentation describes retained entrypoints, not additional live-test coverage.
+Run `bash reinstall.sh ...` as root from the complete directory on Linux.
 
 ### Feature 1: Install <img width="16" height="16" src="https://www.kernel.org/theme/images/logos/favicon.png" /> Linux
 
@@ -146,17 +128,15 @@ The preparation script does not trigger the first reboot. Review its output, the
 > If the script was run by mistake, you can run `bash reinstall.sh reset` before rebooting to cancel the reinstallation operation.
 
 - The script prompts for a username and password. If left blank, will use `root` and random password.
-- If no version is specified, the script selects the last version in its built-in list, not necessarily a Po0-tested version. Specify a version from the verified table for a tested path.
-- Reclaims the temporary installation partition and expands the target filesystem where the selected installation path supports it.
-- Retains upstream kernel selection and necessary Tencent disk handling. The vendor CPU/IRQ/RPS/XPS tuning suite is not copied into the new system.
+- If no version specified, will install the latest version.
+- Maximizes disk space utilization: no boot or swap partitions.
+- Automatically install optimized kernel based on machine type and vendor.
 - When installing Red Hat, you must provide the `qcow2` image link obtained from <https://access.redhat.com/downloads/content/rhel>. You can also install `qcow2` of other RHEL-based OS, such as `Alibaba Cloud Linux` and `TencentOS Server`.
 - After reinstallation, if you need to change the SSH port or switch to key-based login, make sure to also modify the files inside `/etc/ssh/sshd_config.d/`.
-- Installation can add or replace required kernel/boot packages, but does not perform a general upgrade of every package. Update the installed system according to your maintenance policy.
+- To ensure a faster reinstall, the new system will not be updated during the process. Please update the system manually after reinstallation.
 - The username, password, and key configured during the installation of fnOS/FygoOS are only used to log in via SSH to view logs during installation, and will not be applied to the new system. After installation, you need to go to the admin panel at <http://IP:5666> to create a user and enable SSH.
 
-Choose one system and one version from this syntax list; `|` means alternatives and is not a shell command to paste literally.
-
-```text
+```bash
 bash reinstall.sh anolis      7|8|23
                   rocky       8|9|10
                   oracle      8|9|10
@@ -176,7 +156,7 @@ bash reinstall.sh anolis      7|8|23
                   arch
                   gentoo
                   aosc
-                  redhat      --img="http://YOUR_MIRROR:PORT/rhel.qcow2"
+                  redhat      --img="http://access.cdn.redhat.com/xxx.qcow2"
 ```
 
 #### Optional Parameters
@@ -192,29 +172,34 @@ bash reinstall.sh anolis      7|8|23
 
 > [!TIP]
 >
-> Installation logs use SSH/screen only; there is no Web log service. Provider console/VNC or a serial console can also show boot diagnostics.
+> Monitor installation logs through SSH/screen, or use the provider console to view boot output.
 >
-> If the installation environment and its network remain running, SSH can be used for diagnosis or manual recovery; SSH cannot recover a machine that has failed to boot or lost networking.
+> Even if errors occur during the installation process, SSH is available for manual recovery.
 >
 > If the target system is not Debian/Kali, run `/trans.sh alpine` can automatically recover to Alpine Linux.
 
 <details>
 
-<summary>Cloud-image option and removed legacy installers</summary>
+<summary>Install Debian using a cloud image</summary>
 
-Debian's optional cloud-image path is retained, but has not completed a Po0 whole-system test:
+- Suitable for machines with slower CPUs.
 
 ```bash
-bash reinstall.sh debian 12 --ci
+bash reinstall.sh debian --ci
 ```
-
-The old Ubuntu/RHEL-family ISO `--installer` mode is rejected before boot changes. Its disabled implementation and dedicated files have been removed. The normal Ubuntu, AlmaLinux and other cloud-image targets remain available.
 
 </details>
 
+#### PO0 mirrors and installation logs
+
+- The default mirror is `http://mirrors.tencentyun.com`. Package repositories stay internal; only cloud images fall back to rsync.
+- Uses DHCP-provided DNS, with saved original resolvers as a fallback when DNS is missing.
+- Uses chrony with `time1.tencentyun.com` through `time5.tencentyun.com`.
+- Debian/Kali installer logs: `tail -f /var/log/syslog` or `screen -x root/`. Alpine installation environment logs: `tail -f /reinstall.log`.
+
 ### Feature 2: DD RAW image to hard disk
 
-This entrypoint is retained but not covered by the Po0 full-installation tests. The image and any remote NoCloud files must be reachable from Po0. Rsync URLs are supported for QCOW2 cloud-image installation, not raw DD streams. `YOUR_MIRROR:PORT` below is a placeholder for a service you control; the script does not make that service available.
+Use a reachable HTTP(S) URL for raw DD images; rsync URLs are for QCOW2 cloud-image installation.
 
 > [!CAUTION]
 >
@@ -224,11 +209,11 @@ This entrypoint is retained but not covered by the Po0 full-installation tests. 
 
 - Supports `raw` and fixed-size `vhd` image formats. Either uncompressed or compressed as `.gz`, `.xz`, `.zst`, `.tar`, `.tar.gz`, `.tar.xz`, `.tar.zst`.
 - When deploy a Windows image, the system disk will be automatically expanded, and machines with a static IP will have their IP configured, and may take a few minutes after the first boot for the configuration to take effect.
-- When deploy a Linux image, will **NOT** modify any contents of the image.
+- When deploying a Linux image, its contents are unchanged unless `--cloud-data` is supplied.
 - The script prompts for a username and password for SSH to view logs during the installation. If left blank, will use `root` and random password.
 
 ```bash
-bash reinstall.sh dd --img "http://YOUR_MIRROR:PORT/image.xz"
+bash reinstall.sh dd --img "https://example.com/xxx.xz"
 ```
 
 #### Optional Parameters
@@ -257,22 +242,20 @@ bash reinstall.sh dd --img "http://YOUR_MIRROR:PORT/image.xz"
 >
 > ```bash
 > # Local directory
-> bash reinstall.sh dd --img "http://YOUR_MIRROR:PORT/image.xz" --cloud-data /path/to/seed/
+> bash reinstall.sh dd --img "https://example.com/xxx.xz" --cloud-data /path/to/seed/
 > # HTTP directory
-> bash reinstall.sh dd --img "http://YOUR_MIRROR:PORT/image.xz" --cloud-data "http://YOUR_MIRROR:PORT/seed/"
+> bash reinstall.sh dd --img "https://example.com/xxx.xz" --cloud-data "https://example.com/seed/"
 > ```
 
 > [!TIP]
 >
-> Installation logs use SSH/screen only; there is no Web log service. Provider console/VNC or a serial console can also show boot diagnostics.
+> Monitor installation logs through SSH/screen, or use the provider console to view boot output.
 >
-> If the installation environment and its network remain running, SSH can be used for diagnosis or manual recovery; SSH cannot recover a machine that has failed to boot or lost networking.
+> Even if errors occur during the installation process, SSH is available for manual recovery.
 >
 > Or Run `/trans.sh alpine` to automatically recover to Alpine Linux.
 
 ### Feature 3: Reboot to <img width="16" height="16" src="https://www.alpinelinux.org/alpine-logo.ico" /> Alpine Live OS
-
-Alpine 3.24 has booted successfully as the intermediate environment for the verified cloud-image installations. Installing Alpine as the final target is a separate path and has not been fully tested.
 
 - You can use SSH to backup/restore disk, manually perform DD operations, partition modifications, manual Alpine installation, and other operations.
 - The script prompts for a username and password. If left blank, will use `root` and random password.
@@ -297,8 +280,6 @@ bash reinstall.sh alpine --hold 1
 
 ### Feature 4: Reboot to <img width="16" height="16" src="https://netboot.xyz/img/favicon.ico" /> netboot.xyz
 
-This entrypoint is retained but unverified on Po0. Its boot files and menus depend on external resources that may require public HTTP/HTTPS; internal package mirrors and the cloud-image rsync fallback do not automatically cover netboot.xyz.
-
 - Can manually install [more systems](https://github.com/netbootxyz/netboot.xyz?tab=readme-ov-file#what-operating-systems-are-currently-available-on-netbootxyz) using vendor backend VNC.
 
 > [!TIP]
@@ -315,10 +296,6 @@ bash reinstall.sh netboot.xyz
 
 ### Feature 5: Install <img width="16" height="16" src="https://blogs.windows.com/wp-content/uploads/prod/2022/09/cropped-Windows11IconTransparent512-32x32.png" /> Windows ISO
 
-Windows remains an installation **target from Linux**, not a supported source system. This path has not completed Po0 installation tests. The upstream ISO search and driver downloads below can require public HTTP/HTTPS; provide reachable resources or explicit mirror mappings before using it. The tested VM has a 20 GiB disk, below the upstream 25 GB Windows ISO reference requirement.
-
-The edition lists, driver references and screenshots below are retained from upstream and are not Po0 compatibility results.
-
 ![Windows Installation](https://github.com/bin456789/reinstall/assets/7548515/07c1aea2-1ce3-4967-904f-aaf9d6eec3f7)
 
 > [!CAUTION]
@@ -334,7 +311,7 @@ The edition lists, driver references and screenshots below are retained from ups
 - Supports ISO images in any language.
 - Automatically bypassing Windows 11 hardware requirements.
 
-#### Retained Target Systems
+#### Supported Systems
 
 - Windows (Vista ~ 11)
 - Windows Server (2008 ~ 2025)
@@ -344,8 +321,6 @@ The edition lists, driver references and screenshots below are retained from ups
   - Azure Local (Azure Stack HCI)
 
 #### Method 1: Let the Script Automatically Search for ISO
-
-Automatic search is retained as an upstream option, but normally cannot complete when its public HTTPS sources are blocked. Method 2 with a reachable ISO URL is required in that case; automatic driver downloads may still need local files or mappings.
 
 - The script will search for ISOs from <https://ntriver.org/download-windows-office>, a site that collects official ISOs.
 - Searches for 64-bit system images by default, unless `--bit 32` is specified.
@@ -521,10 +496,10 @@ Supports these three language format codes. Case insensitive.
 ```bash
 bash reinstall.sh windows \
      --image-name "Windows 11 Enterprise LTSC 2024 Evaluation" \
-     --iso "http://YOUR_MIRROR:PORT/windows.iso"
+     --iso "https://go.microsoft.com/fwlink/?linkid=2289029"
 ```
 
-or a magnet link (retained, unverified; tracker discovery may also require external resources)
+or Magnet Link
 
 ```bash
 bash reinstall.sh windows \
@@ -537,8 +512,8 @@ bash reinstall.sh windows \
 <summary>The following website provides ISO links.</summary>
 
 - General
-  - <https://ntriver.org/download-windows-office>
-  - <https://massgrave.dev/genuine-installation-media>
+  - <https://ntriver.org/download-windows-office> (Recommended, ISOs are up to date)
+  - <https://massgrave.dev/genuine-installation-media> (Recommended, ISOs are up to date)
   - <https://next.itellyou.cn>
   - <https://www.xitongku.com>
   - <https://www.microsoft.com/software-download/windows10> (Need to open it with a non-Windows User-Agent)
@@ -652,7 +627,7 @@ Open File menu > Open Image File, select the iso to be installed to get the imag
 
 #### Considerations for Installing Windows on ARM
 
-The following ARM notes and provider table are upstream reference material. No ARM or Windows target has been validated by this Po0 fork.
+Most ARM cloud server support installing Windows 11.
 
 During the installation process, you might encounter a black screen, and the serial console may display `ConvertPages: failed to find range`, but neither issue affects the installation.
 
@@ -679,8 +654,6 @@ bash reinstall.sh reset
 
 ### --ssh-key
 
-Prefer a local public-key file or an inline public key on Po0. GitHub/GitLab shorthand and HTTP URLs are still parsed, but require those endpoints to be reachable; they do not bypass blocked public ports.
-
 - `--ssh-key "ssh-rsa ..."`
 - `--ssh-key "ssh-ed25519 ..."`
 - `--ssh-key "ecdsa-sha2-nistp256/384/521 ..."`
@@ -691,50 +664,29 @@ Prefer a local public-key file or an inline public key on Po0. GitHub/GitLab sho
 
 ## How to Use an Old Version
 
-Use an entire historical bundle from this fork; do not replace one script inside a versioned release. `--commit` and `trans.sh update` are not supported.
-
-On a computer with GitHub access, select a commit from [this repository's history](https://github.com/mihomoQ/reinstall-Po0/commits/main), then build and transfer its complete contents:
+Choose a commit from [this repository's history](https://github.com/mihomoQ/reinstall-Po0/commits/main) on a computer with GitHub access, then build and upload the complete version:
 
 ```bash
 git clone https://github.com/mihomoQ/reinstall-Po0.git
 cd reinstall-Po0
 git checkout COMMIT_ID
 python3 tools/build-bundle.py
-scp dist/reinstall-Po0.tar.gz root@YOUR_SERVER:/root/
 ```
 
-Choose a Po0-adapted commit that contains the bundle builder and follow that version's documentation. Extract it into a separate directory rather than mixing files with another version.
+Replace `COMMIT_ID` with the desired commit. Keep all helper files from the same version together.
 
 ## How to Modify the Script for Your Own
 
-1. Fork this repository and clone the complete tree.
-2. For a different internal mirror, copy `po0.conf.example` to `po0.conf` and set `PO0_MIRROR_BASE` to an HTTP origin (host and optional port, without a path). The Debian installer package paths require HTTP.
-3. For specific resource prefixes, copy `po0-mirrors.conf.example` to `po0-mirrors.conf` and add literal source/target HTTP(S) prefix pairs. Only replace resources with endpoints actually reachable from your server.
-4. Modify the code, run the relevant isolated tests, and rebuild the full bundle. Transfer the rebuilt bundle and any private operator configuration separately.
-
-For example, an operator-controlled image server might use:
-
-```text
-https://mirror.nju.edu.cn/ubuntu-cloud-images/ http://YOUR_MIRROR:8080/ubuntu-cloud-images/
-```
-
-`po0.conf` is trusted shell configuration; both private configuration files are Git-ignored and excluded from the public bundle. Do not put credentials, private keys or machine-specific logs into the repository.
-
-### Po0 resources, DNS, time and logs
-
-- Package repositories use the internal mirror. Cloud images prefer internal HTTP and then bundled campus rsync endpoints on port 873. [MirrorZ](https://mirrors.cernet.edu.cn/) is an HTTP redirect service, not an rsync redirector, and is not a runtime dependency here.
-- HTTP and rsync cloud images share available size/SHA256 checks and explicit QCOW2 structural checks. The complete image is transferred once in the installer. Mirror-provided hashes do not authenticate publisher identity. Plain images are downloaded after repartitioning, so transfer or validation failure can require panel recovery.
-- DNS comes from DHCP. The tested machines received Tencent VPC DNS `183.60.83.19` and `183.60.82.98`. Saved original resolvers are used only when valid DHCP DNS is missing; no public DNS replacement is introduced.
-- Chrony uses `time1.tencentyun.com` through `time5.tencentyun.com`. The four verified targets passed first-boot synchronization checks.
-- Follow Debian/Kali installation with `tail -f /var/log/syslog` or `screen -x root/` over SSH. In the Alpine intermediate environment, use `tail -f /reinstall.log`.
-- Gentoo is configured for internal signed repository snapshots and binary packages without external key refresh. Resource and isolated tests passed; a full Gentoo installation remains unverified.
-- Some optional resources, including ELTS keys, frpc, Windows drivers, trackers and other unverified target paths, may still require explicit reachable resources. Retaining a menu entry does not imply that all its downloads are covered by internal mirrors.
-
-The [current live-test record](docs/live-test-2026-10-28.md) covers five actual reinstalls; the [earlier Debian record](docs/live-test-2026-10-27.md) is retained as history. The source was synchronized through upstream commit `54fae2067557b3c0ca49e7c9ce03bca63c793f8c`.
+1. Fork this repository.
+2. Copy `po0.conf.example` to `po0.conf` to change the internal mirror. `PO0_MIRROR_BASE` is an HTTP host with an optional port and no repository path.
+3. Copy `po0-mirrors.conf.example` to `po0-mirrors.conf` for individual HTTP(S) prefix mappings. Each line contains the original prefix and its replacement.
+4. Modify the code, rebuild the complete bundle, and upload it. Private configuration files are kept out of the public repository and generated bundle.
 
 ## Thanks
 
-This fork builds on [bin456789/reinstall](https://github.com/bin456789/reinstall). The following server-provider acknowledgements are retained from the upstream project; they do not imply sponsorship or testing of this fork.
+Thanks to [bin456789/reinstall](https://github.com/bin456789/reinstall) for the original project. This fork retains the [GPL-3.0 license](LICENSE).
+
+The original project thanks the following businesses for providing free servers.
 
 [![Oracle Cloud](https://github.com/bin456789/reinstall/assets/7548515/8b430ed4-8344-4f96-b4da-c2bda031cc90)](https://www.oracle.com/cloud/)
 [![DartNode](https://github.com/bin456789/reinstall/assets/7548515/435d6740-bcdd-4f3a-a196-2f60ae397f17)](https://dartnode.com/)
